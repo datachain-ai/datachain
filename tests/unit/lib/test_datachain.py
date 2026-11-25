@@ -1,3 +1,4 @@
+import contextlib
 import datetime as dt
 import enum
 import hashlib
@@ -23,6 +24,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 import datachain as dc
 import datachain.query.dataset as query_dataset
 from datachain import Column, func
+from datachain.data_storage.warehouse import AbstractWarehouse
 from datachain.dataset import DatasetStatus
 from datachain.error import (
     DatasetInvalidVersionError,
@@ -50,7 +52,7 @@ from datachain.lib.signal_schema import (
     SignalSchema,
     SignalSchemaWarning,
 )
-from datachain.lib.udf import BindContext, BoundSpec, UDFAdapter
+from datachain.lib.udf import BindContext, BoundSpec, UDFAdapter, UdfError
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.sql.types import Array, Float, Float32, Int64, SQLType, String
@@ -1824,6 +1826,60 @@ def test_read_dataset_name_version(test_session):
     chain = dc.read_dataset(name)
     assert chain.name == name
     assert chain.version
+
+
+@contextlib.contextmanager
+def _trace_sqlite_statements(session):
+    executed: list[str] = []
+    conns = {session.catalog.metastore.db.db, session.catalog.warehouse.db.db}
+    for conn in conns:
+        conn.set_trace_callback(executed.append)
+    try:
+        yield executed
+    finally:
+        for conn in conns:
+            conn.set_trace_callback(None)
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [(None, 3), ("1.0.0", 1), (1, 2), (">=1.0.0,<2.0.0", 2)],
+    ids=["latest", "exact", "major-int", "range"],
+)
+def test_read_dataset_to_list_runs_two_statements(test_session, version, expected):
+    dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
+    dc.read_values(num=[2], session=test_session).save("selected", version="1.10.0")
+    dc.read_values(num=[3], session=test_session).save("selected", version="2.0.0")
+
+    with _trace_sqlite_statements(test_session) as executed:
+        rows = dc.read_dataset(
+            "selected", version=version, session=test_session
+        ).to_list("num")
+
+    assert rows == [(expected,)]
+    assert len(executed) == 2
+
+    test_session.catalog.warehouse.db.metadata.clear()
+    with _trace_sqlite_statements(test_session) as cold_executed:
+        cold_rows = dc.read_dataset(
+            "selected", version=version, session=test_session
+        ).to_list("num")
+
+    assert cold_rows == [(expected,)]
+    assert len(cold_executed) == 3
+
+
+@skip_if_not_sqlite
+def test_save_in_default_project_skips_projects_query(test_session):
+    dc.read_values(num=[1, 2], session=test_session).save("proj_shortcut_src")
+
+    with _trace_sqlite_statements(test_session) as executed:
+        dc.read_dataset("proj_shortcut_src", session=test_session).filter(
+            dc.C("num") == 1
+        ).save("proj_shortcut_out")
+
+    assert not any("FROM projects" in sql for sql in executed)
 
 
 def test_chain_of_maps(test_session):
@@ -7884,21 +7940,30 @@ def test_save_keeps_order_across_batches(test_session, monkeypatch, build, size)
     assert saved.to_values("k") == sorted(k)[:size]
 
 
-def test_adjust_outputs_calls_an_overridden_convert_type(test_session, mocker):
-    from datachain.query.dataset import adjust_outputs, get_col_types
+def test_udf_outputs_are_encoded_by_the_warehouse_type_codec(test_session, mocker):
     from datachain.sql.types import DateTime
 
-    def normalizing(self, val, *args):
-        return val.astimezone(dt.UTC).replace(tzinfo=None)
-
     warehouse = test_session.catalog.warehouse
-    mocker.patch.object(type(warehouse), "convert_type", normalizing)
-    when = dt.datetime(2026, 1, 1, 12, tzinfo=dt.timezone(dt.timedelta(hours=2)))
-    col_types = get_col_types(warehouse, {"x": DateTime})
+    type_codec = type(warehouse).type_codec
 
-    row = adjust_outputs(warehouse, {"x": when}, col_types, None)  # type: ignore[arg-type]
+    def normalizing(self, sql_type):
+        codec = type_codec(self, sql_type)
+        if not isinstance(sql_type, DateTime):
+            return codec
+        # every value through encode, also where a warehouse keeps datetimes as is
+        encode = codec.encode
+        return codec._replace(
+            kept=frozenset(), encode=lambda v: encode(v.replace(hour=0))
+        )
 
-    assert row["x"] == dt.datetime(2026, 1, 1, 10)
+    mocker.patch.object(type(warehouse), "type_codec", normalizing)
+    when = dt.datetime(2026, 1, 1, 12, tzinfo=dt.UTC)
+
+    chain = dc.read_values(n=[1], session=test_session).map(
+        x=lambda n: when, output=dt.datetime
+    )
+
+    assert chain.to_values("x") == [dt.datetime(2026, 1, 1, tzinfo=dt.UTC)]
 
 
 def test_multi_signal_map_resolves_string_annotations(test_session):
@@ -7912,3 +7977,226 @@ def test_multi_signal_map_resolves_string_annotations(test_session):
         first=first, second=second
     )
     assert sorted(result.to_list("first", "second")) == [(2, 2), (3, 4)]
+
+
+class NullableInts(BaseModel):
+    vals: list[int | None]
+
+
+class NullableFloats(BaseModel):
+    vals: list[float | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([1, None], id="none-last"),
+        pytest.param([None, 2], id="none-first"),
+        pytest.param([None, None], id="all-none"),
+        pytest.param([None, 2, None, 4], id="none-interleaved"),
+    ],
+)
+def test_a_nullable_int_list_round_trips_whatever_the_order(test_session, vals):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: NullableInts(vals=vals), output=NullableInts)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]
+
+
+@pytest.mark.parametrize(
+    "vals,expected",
+    [
+        pytest.param([1, None], [1.0, None], id="none-last"),
+        pytest.param([None, 2], [None, 2.0], id="none-first"),
+        pytest.param([None, None], [None, None], id="all-none"),
+    ],
+)
+def test_a_nullable_float_list_round_trips_whatever_the_order(
+    test_session, vals, expected
+):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: NullableFloats(vals=vals), output=NullableFloats)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(expected,)]
+
+
+class DictItem(BaseModel):
+    n: int
+
+
+class DictItemHolder(BaseModel):
+    vals: list[dict[str, DictItem] | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([{"a": DictItem(n=1)}, None], id="none-last"),
+        pytest.param([None, {"a": DictItem(n=1)}], id="none-first"),
+    ],
+)
+def test_models_inside_dict_items_convert_wherever_none_sits(test_session, vals):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: DictItemHolder(vals=vals), output=DictItemHolder)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]
+
+
+class MixedUnionHolder(BaseModel):
+    vals: list[dict | list[dict] | None]
+
+
+def test_a_list_of_mixed_shapes_is_left_alone(test_session):
+    value = [None, [{"a": 1}], {"b": 2}]
+
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: MixedUnionHolder(vals=value), output=MixedUnionHolder)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(value,)]
+
+
+class ModelFirstMixedHolder(BaseModel):
+    vals: list[DictItem | dict | None]
+
+
+def test_a_mixed_list_led_by_a_model_is_left_alone(test_session):
+    # The first typed element is a model but the rest are not, so no single
+    # shape can be assumed; the list has to reach the warehouse as it is.
+    vals = [DictItem(n=1), {"b": 2}, None]
+
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: ModelFirstMixedHolder(vals=vals), output=ModelFirstMixedHolder)
+        .to_list("h.vals")
+    )
+
+    # A heterogeneous union hydrates as plain JSON rather than as models.
+    assert rows == [([{"n": 1}, {"b": 2}, None],)]
+
+
+@pytest.mark.parametrize("shape", ["bare", "in-a-list"])
+def test_save_refuses_colliding_dict_keys_inside_a_model(test_session, shape):
+    class Inner(DataModel):
+        lookup: dict
+
+    inner = Inner(lookup=dict(_CLASHING))
+    annotation, value = {
+        "bare": (Inner, inner),
+        "in-a-list": (list[Inner], [inner]),
+    }[shape]
+    holder = type("Holder", (DataModel,), {"__annotations__": {"rows": annotation}})
+
+    chain = dc.read_values(collection=[holder(rows=value)], session=test_session)
+
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("model_keys")
+
+
+@pytest.mark.parametrize(
+    "value", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"]
+)
+def test_save_keeps_a_model_float_json_cannot_spell(test_session, value):
+    class Measure(DataModel):
+        v: float
+
+    saved = dc.read_values(m=[Measure(v=value)], session=test_session).save("finite")
+
+    assert repr(saved.to_values("m.v")[0]) == repr(value)
+
+
+def test_save_writes_no_rows_when_a_later_row_has_colliding_keys(
+    test_session, monkeypatch
+):
+    monkeypatch.setattr(AbstractWarehouse, "INSERT_BATCH_SIZE", 4)
+
+    class Holder(DataModel):
+        rows: list[dict]
+
+    values = [Holder(rows=[{"a": i}]) for i in range(12)]
+    values[9] = Holder(rows=[dict(_CLASHING)])
+
+    chain = dc.read_values(collection=values, session=test_session)
+
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("late_collision")
+
+    # read_dataset would fall back to Studio for a missing name
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset("late_collision")
+
+
+@skip_if_not_sqlite
+def test_filter_matches_a_saved_list_of_dicts(test_session):
+    class Holder(dc.DataModel):
+        rows: list[dict[str, int]]
+
+    saved = dc.read_values(x=[Holder(rows=[{"a": 1}])], session=test_session).save(
+        "dict_rows"
+    )
+
+    assert saved.filter(C("x.rows") == [{"a": 1}]).count() == 1
+
+
+_CLASHING = {"1": "first", 1: "second"}
+
+
+def test_save_refuses_a_dict_whose_keys_collide_as_json(test_session):
+    class Ambiguous(DataModel):
+        lookup: dict
+
+    chain = dc.read_values(
+        collection=[Ambiguous(lookup={"1": "first", 1: "second"})],
+        session=test_session,
+    )
+
+    # both keys become the JSON key "1", so one value would vanish with nothing
+    # on the read side able to recover it
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("ambiguous_keys")
+
+
+def test_save_keeps_both_entries_when_dict_keys_do_not_collide(test_session):
+    class Ambiguous(DataModel):
+        lookup: dict
+
+    saved = dc.read_values(
+        collection=[Ambiguous(lookup={"x": "a", 2: "b"})], session=test_session
+    ).save("no_clash")
+
+    # both entries survive, but the declared int key reads back as a JSON string
+    (out,) = saved.to_values("collection.lookup")
+    assert out == {"x": "a", "2": "b"}
+    assert [type(k) for k in out] == [str, str]
+
+
+@pytest.mark.parametrize(
+    "annotation,value",
+    [
+        (list[dict], [_CLASHING]),
+        (list[list[dict]], [[_CLASHING]]),
+        (tuple[dict, ...], (_CLASHING,)),
+        (dict[str, dict], {"k": _CLASHING}),
+    ],
+    ids=["in-a-list", "in-a-nested-list", "in-a-tuple", "in-a-dict"],
+)
+def test_save_refuses_colliding_dict_keys_inside_a_collection(
+    test_session, annotation, value
+):
+    holder = type("Holder", (DataModel,), {"__annotations__": {"rows": annotation}})
+
+    chain = dc.read_values(collection=[holder(rows=value)], session=test_session)
+
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("nested_keys")

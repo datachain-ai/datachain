@@ -7,6 +7,7 @@ from typing import Annotated, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
 
+import datachain.sql  # noqa: F401
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     is_mapping_annotation,

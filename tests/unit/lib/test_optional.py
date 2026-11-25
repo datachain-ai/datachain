@@ -14,7 +14,6 @@ from typing import Annotated, Optional, Union
 import pytest
 from pydantic import BaseModel
 
-from datachain.dataset import RowDict
 from datachain.lib.convert.flatten import FieldKind, classify_field, flatten
 from datachain.lib.convert.unflatten import unflatten_to_json
 from datachain.lib.convert.values_to_tuples import infer_type_from_sequence
@@ -356,17 +355,9 @@ def test_optional_datamodel_roundtrip_at_top_level():
     assert "item._type_tag" in flat
     assert "item.city" in flat
     # NULL tag (None arm) returns None for top-level Optional[Model].
-    assert schema.row_to_objs(
-        RowDict(zip(schema.to_udf_spec(), (None, None, None), strict=True))
-    ) == [None]
-    assert schema.row_to_objs(
-        RowDict(
-            zip(
-                schema.to_udf_spec(),
-                (arm_selector(_Addr), "Paris", "75001"),
-                strict=True,
-            )
-        )
+    assert schema.row_reader(list(schema.to_udf_spec()))((None, None, None)) == [None]
+    assert schema.row_reader(list(schema.to_udf_spec()))(
+        (arm_selector(_Addr), "Paris", "75001")
     ) == [_Addr(city="Paris", zip="75001")]
 
 

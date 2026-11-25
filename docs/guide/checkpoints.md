@@ -48,7 +48,7 @@ def process(file) -> str:
 **Third run** (`python process.py`): DataChain detects that `processed_files` was already created with the same chain. It skips everything:
 
 ```
-Checkpoint found for dataset 'processed_files', skipping creation
+Reusing dataset 'processed_files@1.0.0' (skipping recompute)
 ```
 
 ## What Invalidates Checkpoints

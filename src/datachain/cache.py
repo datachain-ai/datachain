@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 from dvc_data.hashfile.db.local import LocalHashFileDB
 from dvc_objects.fs.local import LocalFileSystem
 from dvc_objects.fs.utils import remove
-from fsspec.callbacks import Callback, TqdmCallback
+from fsspec import Callback
+from fsspec.callbacks import TqdmCallback
 
 if TYPE_CHECKING:
     from datachain.client import Client

@@ -3,6 +3,8 @@ import logging
 import os
 import os.path
 import posixpath
+import socket
+import sqlite3
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
@@ -10,6 +12,7 @@ from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from fnmatch import fnmatchcase
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
@@ -20,6 +23,7 @@ from sqlalchemy import Column
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
+from datachain.data_storage.schema import parts_table_name
 from datachain.dataset import (
     DATASET_PREFIX,
     DEFAULT_DATASET_VERSION,
@@ -51,7 +55,12 @@ from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
+from datachain.utils import (
+    DataChainDir,
+    DatasetIdentifier,
+    interprocess_file_lock,
+    suffix_to_number,
+)
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy
@@ -85,7 +94,33 @@ PULL_DATASET_MAX_THREADS = 5
 PULL_DATASET_CHUNK_TIMEOUT = 3600
 PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be available
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
-_MAX_VERSION_CLAIM_RETRIES = 5
+_MAX_VERSION_CLAIM_RETRIES = 20
+_ACTIVE_REMOVALS: set[str] = set()
+_REMOVAL_CLAIM_TTL_SEC = 300
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _is_active_removal_claim(claim: str | None, version_uuid: str) -> bool:
+    if not claim or not claim.startswith("removing:"):
+        return False
+    _, host, pid_str, ts_str, _ = claim.split(":", 4)
+    if time.time() - int(ts_str) > _REMOVAL_CLAIM_TTL_SEC:
+        return False
+    if host != socket.gethostname():
+        return True
+    pid = int(pid_str)
+    return (
+        version_uuid in _ACTIVE_REMOVALS if pid == os.getpid() else _pid_is_alive(pid)
+    )
 
 
 def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
@@ -462,10 +497,27 @@ def instantiate_node_groups(
         instantiate_progress_bar.close()
 
 
+def matches_find_filters(node: Node, names, inames, paths, ipaths, size, typ) -> bool:
+    """True if a file without a listing passes the same filters as Listing.find."""
+    if size is not None:
+        limit = suffix_to_number(size)
+        if (limit >= 0 and node.size < limit) or (limit < 0 and node.size > -limit):
+            return False
+    return (
+        (typ is None or typ in {"f", "file", "files"})
+        and all(fnmatchcase(node.name, p) for p in names or ())
+        and all(fnmatchcase(node.name.lower(), p.lower()) for p in inames or ())
+        and all(fnmatchcase(node.path, p) for p in paths or ())
+        and all(fnmatchcase(node.path.lower(), p.lower()) for p in ipaths or ())
+    )
+
+
 def find_column_to_str(  # noqa: PLR0911
     row: tuple[Any, ...], field_lookup: dict[str, int], src: DataSource, column: str
 ) -> str:
     if column == "du":
+        if src.listing is None:
+            return str(row[field_lookup["size"]])
         return str(
             src.listing.du(
                 {f: row[field_lookup[f]] for f in ["dir_type", "size", "path"]}
@@ -511,6 +563,8 @@ class Catalog:
         tmp_dir=None,
         client_config: dict[str, Any] | None = None,
         in_memory: bool = False,
+        *,
+        source_client_configs: dict[str, dict[str, Any]] | None = None,
     ):
         datachain_dir = DataChainDir(cache=cache_dir, tmp=tmp_dir)
         datachain_dir.init()
@@ -518,6 +572,8 @@ class Catalog:
         self.warehouse = warehouse
         self.cache = Cache(datachain_dir.cache, datachain_dir.tmp)
         self.client_config = client_config if client_config is not None else {}
+        # Client configs of the storage sources (File.source) its chains listed.
+        self.source_client_configs = dict(source_client_configs or {})
         self._init_params = {
             "cache_dir": cache_dir,
             "tmp_dir": tmp_dir,
@@ -535,6 +591,7 @@ class Catalog:
         return {
             **self._init_params,
             "client_config": self.client_config,
+            "source_client_configs": self.source_client_configs,
         }
 
     def copy(self, cache=True, db=True):
@@ -550,6 +607,10 @@ class Catalog:
             result.metastore = None
             result.warehouse = None
         return result
+
+    def client_config_for(self, source: str) -> dict[str, Any]:
+        """The client config to read files of `source` (a `File.source`) with."""
+        return self.source_client_configs.get(source, self.client_config)
 
     def close(self) -> None:
         if not self._owns_connections:
@@ -567,10 +628,6 @@ class Catalog:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
-    @classmethod
-    def generate_query_dataset_name(cls) -> str:
-        return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
-
     def get_client(
         self, uri: str, *, client_config: dict | None = None, **config: Any
     ) -> Client:
@@ -578,7 +635,9 @@ class Catalog:
         Return the client corresponding to the given source `uri`.
         """
         config = (
-            client_config if client_config is not None else config or self.client_config
+            client_config
+            if client_config is not None
+            else config or self.client_config_for(uri)
         )
         cls = Client.get_implementation(uri)
         return cls.from_source(StorageURI(uri), self.cache, **config)
@@ -907,6 +966,29 @@ class Catalog:
             content_hash=content_hash,
         )
 
+    def _recreate_dataset(
+        self,
+        dataset: "DatasetRecord",
+        name: str,
+        project: Project | None,
+        columns: Sequence[Column],
+        feature_schema: dict | None,
+        query_script: str,
+    ) -> "DatasetRecord":
+        schema = {
+            c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)
+        }
+        return self.metastore.create_dataset(
+            name,
+            project.id if project else None,
+            feature_schema=feature_schema,
+            query_script=query_script,
+            schema=schema,
+            ignore_if_exists=True,
+            description=dataset.description,
+            attrs=dataset.attrs,
+        )
+
     @staticmethod
     def _next_auto_version(dataset: "DatasetRecord", update_version: str | None) -> str:
         """Compute the next version for a dataset based on the update strategy."""
@@ -942,7 +1024,7 @@ class Catalog:
         auto-computed from the dataset and retried up to
         ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
         """
-        max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
+        max_retries = _MAX_VERSION_CLAIM_RETRIES
         target_version = version or self._next_auto_version(dataset, update_version)
 
         for attempt in range(1 + max_retries):
@@ -953,7 +1035,7 @@ class Catalog:
                         "removed. Pick a different version."
                     )
                 raise DatasetInvalidVersionError(
-                    f"Version {target_version} already exists in dataset {name}"
+                    f"Dataset {name} already has version {target_version}"
                 )
 
             if validate_version and not dataset.is_valid_next_version(target_version):
@@ -962,17 +1044,30 @@ class Catalog:
                     f" the current latest one"
                 )
 
-            dataset, version_created = self.create_dataset_version(
-                dataset,
-                target_version,
-                feature_schema=feature_schema,
-                query_script=query_script,
-                sources=sources,
-                columns=columns,
-                uuid=uuid,
-                job_id=job_id,
-                content_hash=content_hash,
-            )
+            try:
+                dataset, version_created = self.create_dataset_version(
+                    dataset,
+                    target_version,
+                    feature_schema=feature_schema,
+                    query_script=query_script,
+                    sources=sources,
+                    columns=columns,
+                    uuid=uuid,
+                    job_id=job_id,
+                    content_hash=content_hash,
+                )
+            except (
+                DatasetNotFoundError,
+                sa.exc.IntegrityError,
+                sqlite3.IntegrityError,
+            ):
+                dataset = self._recreate_dataset(
+                    dataset, name, project, columns, feature_schema, query_script
+                )
+                target_version = version or self._next_auto_version(
+                    dataset, update_version
+                )
+                continue
 
             if version_created:
                 assert len(dataset.versions) == 1
@@ -980,7 +1075,7 @@ class Catalog:
                 return dataset
 
             # Another writer claimed this version between our check and insert.
-            if attempt >= max_retries:
+            if version or attempt >= max_retries:
                 break
 
             logger.debug(
@@ -991,12 +1086,17 @@ class Catalog:
                 attempt + 1,
                 1 + max_retries,
             )
-            dataset = self.get_dataset(
-                name,
-                namespace_name=project.namespace.name if project else None,
-                project_name=project.name if project else None,
-                versions=None,
-            )
+            try:
+                dataset = self.get_dataset(
+                    name,
+                    namespace_name=project.namespace.name if project else None,
+                    project_name=project.name if project else None,
+                    versions=None,
+                )
+            except DatasetNotFoundError:
+                dataset = self._recreate_dataset(
+                    dataset, name, project, columns, feature_schema, query_script
+                )
             target_version = self._next_auto_version(dataset, update_version)
 
         if version:
@@ -1060,8 +1160,6 @@ class Catalog:
     def update_dataset_version_with_warehouse_info(
         self, dataset: DatasetRecord, version: str, **kwargs
     ) -> None:
-        from datachain.query.dataset import DatasetQuery
-
         dataset_version = dataset.get_version(version)
         if dataset_version._preview_loaded:
             raise RuntimeError(
@@ -1082,18 +1180,11 @@ class Catalog:
             if size != dataset_version.size:
                 values["size"] = size
 
-        preview = (
-            DatasetQuery(
-                name=dataset.name,
-                namespace_name=dataset.project.namespace.name,
-                project_name=dataset.project.name,
-                version=version,
-                catalog=self,
-                include_incomplete=True,  # Allow reading CREATED version
-            )
-            .limit(20)
-            .to_db_records()
-        )
+        table = self.warehouse.dataset_rows(dataset, version).get_table()
+        preview = [
+            dict(zip(table.c.keys(), row, strict=True))
+            for row in self.warehouse.dataset_rows_select(table.select().limit(20))
+        ]
         preview_rows = len(preview)
         values["preview"] = preview
 
@@ -1118,7 +1209,19 @@ class Catalog:
         if not values:
             return
 
-        self.metastore.update_dataset_version(dataset, version, **values)
+        expected_job_id = values.pop("expected_job_id", None)
+        updated = self.metastore.update_dataset_version(
+            dataset,
+            version,
+            expected_status=DatasetStatus.CREATED,
+            expected_job_id=expected_job_id,
+            **values,
+        )
+        if updated is None:
+            raise ConcurrentDatasetModificationError(
+                f"Could not update status of {dataset.name}@{version}: "
+                f"current owner is not {expected_job_id}"
+            )
 
     def complete_dataset_version(
         self,
@@ -1128,8 +1231,9 @@ class Catalog:
         error_message: str = "",
         error_stack: str = "",
         script_output: str = "",
+        expected_job_id: str | None = None,
         **kwargs,
-    ) -> None:
+    ) -> DatasetRecord:
         """Finalize a dataset version after its rows table has been populated.
 
         This refreshes warehouse-derived metadata first, then marks the version
@@ -1141,8 +1245,13 @@ class Catalog:
         # finalize) and ConcurrentDatasetModificationError (expected_status
         # guard lost to a concurrent state change). Anything else propagates.
         try:
-            self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
-            self.metastore.update_dataset_status(
+            self.update_dataset_version_with_warehouse_info(
+                dataset,
+                version,
+                expected_job_id=expected_job_id,
+                **kwargs,
+            )
+            return self.metastore.update_dataset_status(
                 dataset,
                 DatasetStatus.COMPLETE,
                 version=version,
@@ -1150,6 +1259,7 @@ class Catalog:
                 error_stack=error_stack,
                 script_output=script_output,
                 expected_status=DatasetStatus.CREATED,
+                expected_job_id=expected_job_id,
             )
         except (TableMissingError, ConcurrentDatasetModificationError) as e:
             raise ConcurrentDatasetModificationError(
@@ -1228,7 +1338,25 @@ class Catalog:
             )
 
         return self._claim_and_remove(
-            dataset, version, expected_status=v.status, keep_metadata=keep_metadata
+            dataset,
+            version,
+            expected_status=v.status,
+            expected_job_id=v.job_id if v.status == DatasetStatus.CREATED else None,
+            keep_metadata=keep_metadata,
+        )
+
+    def release_reservation(
+        self, dataset: DatasetRecord, version: str, job_id: str | None
+    ) -> bool:
+        """Remove a version that a save of ``job_id`` reserved and never
+        published. One guarded UPDATE requires status CREATED and that owner,
+        so a published (COMPLETE) version is never touched."""
+        return self._claim_and_remove(
+            dataset,
+            version,
+            expected_status=DatasetStatus.CREATED,
+            expected_job_id=job_id,
+            keep_metadata=False,
         )
 
     def _claim_and_remove(
@@ -1238,6 +1366,7 @@ class Catalog:
         *,
         expected_status: int,
         keep_metadata: bool,
+        expected_job_id: str | None = None,
     ) -> bool:
         """Flip the version status to REMOVING (guarded UPDATE) with the
         appropriate ``pending_metadata_drop`` flag, then drop the rows
@@ -1256,16 +1385,9 @@ class Catalog:
         another caller had already claimed it.
         """
         v = dataset.get_version(version)
-
-        claimed = self.metastore.update_dataset_version(
-            dataset,
-            version,
-            expected_status=expected_status,
-            status=DatasetStatus.REMOVING,
-            removed_at=v.removed_at or datetime.now(UTC),
-            pending_metadata_drop=not keep_metadata,
-        )
-        if claimed is None:
+        if v.status == DatasetStatus.REMOVING and _is_active_removal_claim(
+            v.content_hash, v.uuid
+        ):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
@@ -1273,18 +1395,55 @@ class Catalog:
             )
             return False
 
-        self.warehouse.drop_dataset_rows_table(dataset, version)
-
-        if keep_metadata:
-            self.metastore.update_dataset_version(
+        claim = (
+            f"removing:{socket.gethostname()}:{os.getpid()}"
+            f":{int(time.time())}:{uuid4().hex[:8]}"
+        )
+        _ACTIVE_REMOVALS.add(v.uuid)
+        try:
+            claimed = self.metastore.update_dataset_version(
                 dataset,
                 version,
-                expected_status=DatasetStatus.REMOVING,
-                status=DatasetStatus.REMOVED,
+                expected_status=expected_status,
+                expected_job_id=expected_job_id,
+                status=DatasetStatus.REMOVING,
+                removed_at=v.removed_at or datetime.now(UTC),
+                pending_metadata_drop=not keep_metadata,
+                content_hash=claim,
             )
-        else:
-            self.metastore.remove_dataset_version(dataset, version)
-        return True
+            if claimed is None:
+                logger.debug(
+                    "Skipped remove of %s@%s: another caller is already handling it",
+                    dataset.name,
+                    version,
+                )
+                return False
+
+            try:
+                self.warehouse.drop_dataset_rows_table(dataset, version)
+
+                if keep_metadata:
+                    self.metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.REMOVING,
+                        status=DatasetStatus.REMOVED,
+                        content_hash=None,
+                    )
+                else:
+                    self.metastore.remove_dataset_version(dataset, version)
+            except BaseException:
+                with suppress(Exception):
+                    self.metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.REMOVING,
+                        content_hash=None,
+                    )
+                raise
+            return True
+        finally:
+            _ACTIVE_REMOVALS.discard(v.uuid)
 
     def _remove_versions(
         self,
@@ -1503,7 +1662,6 @@ class Catalog:
         include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
-
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
 
@@ -2380,7 +2538,10 @@ class Catalog:
                 )
 
             for src in matched_sources:
-                yield from du_dirs(src, src.node, depth)
+                if src.listing is None:
+                    yield src.get_node_uri(src.node), src.node.size
+                else:
+                    yield from du_dirs(src, src.node, depth)
 
     def find(
         self,
@@ -2424,9 +2585,16 @@ class Catalog:
             fields = list(field_set)
             field_lookup = {f: i for i, f in enumerate(fields)}
             for src in matched_sources:
-                results = src.listing.find(
-                    src.node, fields, names, inames, paths, ipaths, size, typ
-                )
+                if src.listing is not None:
+                    results = src.listing.find(
+                        src.node, fields, names, inames, paths, ipaths, size, typ
+                    )
+                elif matches_find_filters(
+                    src.node, names, inames, paths, ipaths, size, typ
+                ):
+                    results = [tuple(getattr(src.node, f) for f in fields)]
+                else:
+                    results = []
                 for row in results:
                     yield "\t".join(
                         find_column_to_str(row, field_lookup, src, column)
@@ -2480,6 +2648,13 @@ class Catalog:
 
         # Remove output/partial tables using exact names from checkpoints
         output_tables = [ch.table_name for ch in checkpoints]
+        for ch in checkpoints:
+            if ch.partial:
+                output_tables.append(parts_table_name(ch.table_name))
+                output_tables.extend(
+                    self.warehouse.db.list_tables(pattern=f"{ch.table_name}_%")
+                )
+        output_tables = list(dict.fromkeys(output_tables))
         if output_tables:
             logger.info(
                 "Removing %d UDF output tables: %s", len(output_tables), output_tables

@@ -11,6 +11,7 @@ import shutil
 from abc import ABC, abstractmethod
 from collections.abc import (
     AsyncIterator,
+    Callable,
     Iterator,
     Sequence,
 )
@@ -20,8 +21,9 @@ from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from dvc_objects.fs.system import reflink
+from fsspec import Callback
 from fsspec.asyn import get_loop, sync
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper
@@ -54,11 +56,6 @@ ResultQueue = asyncio.Queue[Sequence[Any] | None]
 def is_cloud_uri(uri: str) -> bool:
     protocol = urlparse(uri).scheme
     return protocol in CLOUD_STORAGE_PROTOCOLS
-
-
-def get_cloud_schemes() -> list[str]:
-    """Get list of cloud storage scheme prefixes."""
-    return [f"{p}://" for p in CLOUD_STORAGE_PROTOCOLS]
 
 
 class Bucket(NamedTuple):
@@ -95,6 +92,9 @@ class Client(ABC):
     # True when the bytes at a version id are never replaced, only appended to.
     # Then a changed size means the file changed, and a changed etag alone doesn't.
     PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
+    # Set by a listing writer: what a listing child makes of a page's rows before
+    # sending them, a picklable function. The parent's own pages stay rows.
+    encode_page: Callable[[list], Any] | None = None
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -382,8 +382,7 @@ class Client(ABC):
                 subdirs.add(subprefix)
             else:
                 files.append(self.info_to_file(info, subprefix))
-        if files:
-            await result_queue.put(files)
+        await result_queue.put(files)
         found_count = len(subdirs) + len(files)
         pbar.update(found_count)
         return subdirs
@@ -674,6 +673,7 @@ class RangeListedClient(Client):
     """A client that lists in parallel key ranges (``RangeListing``)."""
 
     LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
+    NAMES_FOLDERS: ClassVar[bool] = False  # whether it names them (``Page.folders``)
     # lists current objects only, as the storage holds no old versions; None
     # until a listing checks
     _unversioned: bool | None = None

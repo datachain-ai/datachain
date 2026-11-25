@@ -4,8 +4,8 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 from datachain.cli.utils import determine_flavors
-from datachain.config import Config
 from datachain.query.session import Session
+from datachain.remote.studio import StudioClient, is_token_set
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -20,11 +20,15 @@ def ls(
     team: str | None = None,
     **kwargs,
 ):
-    token = Config().read().get("studio", {}).get("token")
-    all, local, studio = determine_flavors(studio, local, all, token)
-
-    show_local = all or local
-    show_studio = all or studio
+    show_local, show_studio = determine_flavors(
+        studio, local, all, lambda: is_token_set(team)
+    )
+    client = None
+    if show_studio:
+        client = StudioClient(team=team)
+        # Fails before any output, local results included: without a login or a
+        # team, also when there is no path to request.
+        client.check_auth()
     label_sections = show_local and show_studio
 
     if show_local:
@@ -32,10 +36,10 @@ def ls(
             print("Local:")
         ls_local(sources, long=long, **kwargs)
 
-    if show_studio:
+    if client:
         if label_sections:
             print("\nStudio:")
-        ls_remote(sources, long=long, team=team)
+        ls_remote(sources, client, long=long)
 
 
 def ls_local(
@@ -88,15 +92,9 @@ def format_ls_entry(entry: str) -> str:
     return shlex.quote(entry)
 
 
-def ls_remote(
-    paths: Iterable[str],
-    long: bool = False,
-    team: str | None = None,
-):
+def ls_remote(paths: Iterable[str], client: StudioClient, long: bool = False):
     from datachain.node import long_line_str
-    from datachain.remote.studio import StudioClient
 
-    client = StudioClient(team=team)
     first = True
     for path, response in client.ls(paths):
         if not first:

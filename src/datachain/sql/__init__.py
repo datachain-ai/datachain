@@ -1,5 +1,4 @@
-from sqlalchemy.sql.elements import literal
-from sqlalchemy.sql.expression import column
+from sqlalchemy import column, literal
 
 # Import PostgreSQL dialect registration (registers PostgreSQL type converter)
 from . import postgresql_dialect  # noqa: F401

@@ -31,7 +31,6 @@ from datachain.sql.functions import path as sql_path
 from datachain.sql.selectable import Values, base_values_compiler
 from datachain.sql.sqlite.types import (
     SQLiteTypeConverter,
-    SQLiteTypeReadConverter,
     register_type_converters,
 )
 from datachain.sql.types import DateTime as DCDateTime
@@ -42,9 +41,9 @@ from datachain.sql.types import (
     register_backend_types,
     register_db_defaults,
     register_type_defaults,
-    register_type_read_converters,
     validate_datetime_cast_input_type,
 )
+from datachain.utils import parent_path
 
 logger = logging.getLogger("datachain")
 
@@ -84,7 +83,6 @@ def setup():
 
     register_type_converters()
     register_backend_types("sqlite", SQLiteTypeConverter())
-    register_type_read_converters("sqlite", SQLiteTypeReadConverter())
     register_type_defaults("sqlite", TypeDefaults())
     register_db_defaults("sqlite", DBDefaults())
 
@@ -379,6 +377,7 @@ def register_user_defined_sql_functions() -> None:
     def create_string_functions(conn):
         _create_function(conn, "split", 2, sqlite_string_split, deterministic=True)
         _create_function(conn, "split", 3, sqlite_string_split, deterministic=True)
+        _create_function(conn, "dc_path_parent", 1, parent_path, deterministic=True)
         _create_function(
             conn, "regexp_replace", 3, sqlite_regexp_replace, deterministic=True
         )
@@ -447,7 +446,7 @@ def convert_datetime(val: bytes) -> datetime:
 
 
 def path_parent(path):
-    return func.rtrim(func.rtrim(path, func.replace(path, slash, empty_str)), slash)
+    return func.dc_path_parent(path)
 
 
 def path_name(path):

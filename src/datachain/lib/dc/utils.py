@@ -6,7 +6,8 @@ import sqlalchemy
 from sqlalchemy.sql.elements import BindParameter
 from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
-from datachain.func.base import Function
+# Resolve the parent package before func.base to keep import-lock ordering consistent.
+from datachain.func import base
 from datachain.lib.data_model import DataModel, DataType
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import DEFAULT_DELIMITER, ColumnExpr
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 
     P = ParamSpec("P")
 
+Function = base.Function
 D = TypeVar("D", bound="DataChain")
 
 
