@@ -11,11 +11,11 @@ import struct
 import sys
 import threading
 import traceback
+from collections.abc import Sequence
 from contextlib import suppress
-from functools import partial
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from datachain.lib.file import FileRow
+from datachain.lib.file import as_file_row
 from datachain.utils import usable_cpu_count
 
 from .ranges import Page
@@ -33,7 +33,6 @@ HEADER = struct.Struct("<Q")  # the size of the pickle that follows
 # a child that doesn't answer a page in time is stuck (stopped, deadlocked): the
 # parent kills it and lists the page itself; a page normally takes under a second
 REPLY_TIMEOUT = float(os.environ.get("DATACHAIN_LISTING_REPLY_TIMEOUT", "300"))
-_as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 
 
 def dump(message: Any) -> bytes:
@@ -115,6 +114,36 @@ def _kill_children() -> None:
         _kill(proc)
 
 
+class Rows(Sequence):
+    """Rows a child sent, unpickled by whoever reads them, not the event loop."""
+
+    def __init__(self, rows: Sequence[tuple]) -> None:
+        self._rows: list | bytes = list(rows)
+        self.size = len(rows)
+
+    def _load(self) -> list:
+        if isinstance(rows := self._rows, bytes):
+            self._rows = rows = list(map(as_file_row, pickle.loads(rows)))  # noqa: S301
+        return rows
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, index):  # type: ignore[override]
+        return self._load()[index]
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __getstate__(self) -> tuple[bytes, int]:
+        # plain tuples: a row type would unpickle per row in Python
+        plain = [tuple(r) for r in self._load()]
+        return pickle.dumps(plain, protocol=5), self.size
+
+    def __setstate__(self, state: tuple[bytes, int]) -> None:
+        self._rows, self.size = state
+
+
 class Pool:
     """Child processes fetching pages for one ``RangeListing``. The parent fetches
     any page a child fails or loses, so errors reach the user as raised."""
@@ -122,9 +151,8 @@ class Pool:
     def __init__(self, client: "RangeListedClient", prefix: str, size: int) -> None:
         # the page size travels so that tests can shrink it in children too
         spec = (type(client), client.name, client.fs_kwargs, client.cache)
-        self.encode = client.encode_page
         try:
-            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix, self.encode))
+            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix, client.encode_page))
         except Exception:
             logger.debug(
                 "Listing in one process: client config does not pickle", exc_info=True
@@ -202,8 +230,7 @@ class Pool:
             return None
         if (page := reply.result()) is None:
             return None
-        rows, *rest = page
-        return Page(rows if self.encode else list(map(_as_file_row, rows)), *rest)
+        return Page(*page)
 
     def _drop(self, proc: asyncio.subprocess.Process, replies: dict) -> None:
         """Kills a stuck child; its pending pages come back None now, as the kill
@@ -294,10 +321,8 @@ async def _serve(
         answer = None
         with suppress(Exception):
             page = await client._list_page(prefix, start_after, token, hi)
-            encode = client.encode_page
-            # plain tuples: a row type would unpickle per row in Python
-            rows = encode(page.rows) if encode else [tuple(r) for r in page.rows]
-            answer = dump((rid, (rows, *page[1:])))
+            encode = client.encode_page or Rows
+            answer = dump((rid, (encode(page.rows), *page[1:])))
         write_frame(answer or dump((rid, None)))
 
     # read from the start: a parent gone during the warm-up ends this child

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy
 
-from datachain.data_storage.codec import RowEncodeError
+from datachain.error import RowEncodeError
 from datachain.lib.convert.flatten import classify_field, flatten_value, union_layout
 from datachain.lib.data_model import DataType, is_chain_type, validate_chain_type
 from datachain.lib.signal_schema import SignalSchema

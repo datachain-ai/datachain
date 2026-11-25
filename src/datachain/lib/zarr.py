@@ -77,9 +77,8 @@ class ZarrStore(DataModel):
         f = self.file
         url = f.get_fs_path()
         storage_options = None
-        if f.source and not f.source.startswith("file://"):
-            catalog = getattr(f, "_catalog", None)
-            storage_options = getattr(catalog, "client_config", None) or None
+        if f._catalog is not None and f.source and not f.source.startswith("file://"):
+            storage_options = f._catalog.client_config_for(f.source) or None
         if storage_options:
             return zarr.open(url, mode=mode, storage_options=storage_options)
         return zarr.open(url, mode=mode)
