@@ -1,10 +1,12 @@
 import enum
 import errno
 import io
+import json
 import math
 import os
 import shutil
 import sys
+import time
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -543,6 +545,7 @@ def test_lance_s3_and_storage_options(
         ch = dc.read_lance(uri, session=s, anon=False, **kw)
         ((src, val),) = ch.filter(C("id") == 3).to_list("source", "v")
         assert (val, src.read()["v"]) == (30, 30)
+        assert "storage_options" not in json.dumps(src.kwargs)
     ch_cfg = dc.read_lance(uri, session=test_session, client_config=ctc.client_config)
     assert ch_cfg.session.catalog.client_config_for("s3://other") == ctc.client_config
 
@@ -590,3 +593,17 @@ def test_lance_s3_and_storage_options(
     for scheme in ("http", "https", "hf"):
         with pytest.raises(DatasetPrepareError, match="not supported"):
             dc.read_lance(f"{scheme}://h/t.lance", version=1, session=test_session)
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+def test_lance_commit_time_is_timezone_independent(tmp_dir, monkeypatch):
+    path = tmp_dir / "tz.lance"
+    lance.write_dataset(pa.table({"a": [1]}), path)
+    stamps = []
+    for tz in ("America/Los_Angeles", "Asia/Tokyo"):
+        monkeypatch.setenv("TZ", tz)
+        time.tzset()
+        stamps.append(arrow._lance_commit_time(lance.dataset(path)))
+    monkeypatch.undo()
+    time.tzset()
+    assert stamps[0] == stamps[1]

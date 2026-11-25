@@ -99,7 +99,7 @@ def read_lance(
         kwargs: Parameters passed to `read_storage` (`client_config` uses fsspec
             key names).
     """
-    from datachain.lib.arrow import _tabular_generator
+    from datachain.lib.arrow import _lance_commit_time, _tabular_generator
 
     from .records import read_records
     from .storage import read_storage
@@ -164,7 +164,7 @@ def read_lance(
     table_records: list[dict[str, Any]] = []
     table_schemas: list[tuple[str, Any]] = []
     for t, ds, schema in tables:
-        ts = ds.get_version()["timestamp"].isoformat()
+        ts = _lance_commit_time(ds)
         frags = [(f.fragment_id, f.data_files()[0]) for f in ds.get_fragments()] or [
             (None, None)
         ]
@@ -179,11 +179,13 @@ def read_lance(
                 "timestamp": ts,
                 "fragment": fid,
             }
-            if storage_options:
-                tbl["storage_options"] = storage_options
             table_records.append({"file": row_file, "lance_fragment": json.dumps(tbl)})
         table_schemas.append((table_records[-len(frags)]["file"].path, schema))
     ordered = [s for _, s in sorted(table_schemas, key=lambda x: x[0])]
+    # Kept on the generator, never in rows: options can hold secrets.
+    gen_opts: dict[str, Any] = (
+        {"storage_options": storage_options} if storage_options else {}
+    )
     gen, out = _tabular_generator(
         None,
         output,
@@ -193,6 +195,7 @@ def read_lance(
         columns,
         schemas=ordered,
         name=uris[0],
+        **gen_opts,
     )
     tbl_chain = read_records(
         table_records,

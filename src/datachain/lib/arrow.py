@@ -12,7 +12,7 @@ import threading
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard
@@ -312,6 +312,11 @@ def _lance_storage_options(
     return opts or None
 
 
+def _lance_commit_time(ds: Any) -> str:
+    """The checked-out version's commit time in UTC (Lance gives local time)."""
+    return ds.get_version()["timestamp"].astimezone(UTC).isoformat()
+
+
 def _open_lance_dataset(file: File, table: dict[str, Any]) -> Any:
     if (catalog := file._catalog) is None:
         raise ValueError("Cannot open Lance table without a catalog")
@@ -328,7 +333,7 @@ def _open_lance_dataset(file: File, table: dict[str, Any]) -> Any:
                 f"Lance tag {ver!r} not found; pass an int for a version number"
             ) from exc
         raise
-    ts = ds.get_version()["timestamp"].isoformat()
+    ts = _lance_commit_time(ds)
     if (expected_ts := table.get("timestamp")) is not None and ts != expected_ts:
         raise FileNotFoundError(
             f"Lance table '{fs_path}' version {ds.version} changed on the source"
@@ -1208,7 +1213,8 @@ class ArrowGenerator(Generator):
                 t = json.loads(lance_fragment)
                 key = (t["source"], t["path"], t["version"], t["timestamp"])
                 if (lds := self._lance_tables.get(key)) is None:
-                    lds = self._lance_tables[key] = _open_lance_dataset(file, t)
+                    so = {"storage_options": kwargs.get("storage_options")}
+                    lds = self._lance_tables[key] = _open_lance_dataset(file, t | so)
                 table_ds = _LanceTableDataset(
                     lds,
                     in_schema,
@@ -1300,7 +1306,7 @@ class ArrowGenerator(Generator):
 
     def _source_kwargs(self) -> dict[str, Any]:
         """Return the read options that each row's source keeps."""
-        kwargs = self.kwargs
+        kwargs = {k: v for k, v in self.kwargs.items() if k != "storage_options"}
         # Can't JSON-serialize CsvFileFormat; may lose formatting options.
         if isinstance(format := kwargs.get("format"), CsvFileFormat):
             # Keep the options that split the file into the same rows and
