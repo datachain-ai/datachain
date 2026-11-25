@@ -509,7 +509,9 @@ def test_version_only_file_without_size_does_not_fail_size_check(
     client = HfClient("datasets", {"token": False}, catalog.cache)
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
     for rev in (commit, "v1"):
-        client.check_unchanged(File(source=client.uri, path="org/repo/a.txt", version=rev))
+        client.check_unchanged(
+            File(source=client.uri, path="org/repo/a.txt", version=rev)
+        )
     with pytest.raises(FileNotFoundError, match="size was 0, now 4"):
         client.check_unchanged(
             File(
@@ -559,7 +561,7 @@ def test_anon_translates_to_token_false_and_credentials_detected():
     assert not HfClient.has_explicit_credentials({"anon": True})
     fs = HfClient.create_fs(anon=True)
     assert fs.sync_fs.token is False
-    fs_override = HfClient.create_fs(anon=True, token="hf_secret")
+    fs_override = HfClient.create_fs(anon=True, token="hf_secret")  # noqa: S106
     assert fs_override.sync_fs.token is False
 
 
@@ -611,7 +613,8 @@ def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
     with pytest.raises(PermissionError) as gated_exc:
         fs.resolve_path("datasets/org/gated/a.txt")
     restored_gated = pickle.loads(pickle.dumps(gated_exc.value))  # noqa: S301
-    assert isinstance(restored_gated, (FileNotFoundError, PermissionError))
+    assert isinstance(restored_gated, FileNotFoundError)
+    assert isinstance(restored_gated, PermissionError)
 
     monkeypatch.setattr(
         hf_file_system.HfFileSystem,
@@ -624,7 +627,8 @@ def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
         fs.resolve_path("datasets/org/repo/a.txt")
     assert isinstance(exc_info.value, HfHubHTTPError)
     restored_401 = pickle.loads(pickle.dumps(exc_info.value))  # noqa: S301
-    assert isinstance(restored_401, (HfHubHTTPError, PermissionError))
+    assert isinstance(restored_401, HfHubHTTPError)
+    assert isinstance(restored_401, PermissionError)
 
     monkeypatch.setattr(
         hf_file_system.HfFileSystem,
