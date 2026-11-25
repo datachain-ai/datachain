@@ -20,8 +20,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("datachain")
 
-SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
-
 
 class DatabaseEngine(ABC, Serializable):
     dialect: ClassVar["Dialect"]

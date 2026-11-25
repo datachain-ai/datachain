@@ -157,6 +157,7 @@ nav:
                   - login: commands/auth/login.md
                   - logout: commands/auth/logout.md
                   - token: commands/auth/token.md
+                  - list: commands/auth/list.md
                   - team: commands/auth/team.md
               - job:
                   - run: commands/job/run.md

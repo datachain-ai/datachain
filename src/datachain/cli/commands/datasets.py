@@ -10,16 +10,13 @@ from tabulate import tabulate
 from datachain import semver
 from datachain.catalog import is_namespace_local
 from datachain.cli.utils import determine_flavors
-from datachain.config import Config
 from datachain.data_storage import JobStatus
-from datachain.error import (
-    DataChainError,
-    DatasetNotFoundError,
-)
+from datachain.error import DatasetNotFoundError
 from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.dc import describe
 from datachain.lib.listing_info import ListingInfo
+from datachain.remote.studio import StudioClient, is_token_set
 from datachain.studio import list_datasets as list_datasets_studio
 from datachain.utils import DatasetIdentifier
 
@@ -60,21 +57,26 @@ def list_datasets(
     name: str | None = None,
     include_removed: bool = False,
 ) -> None:
-    token = Config().read().get("studio", {}).get("token")
-    all, local, studio = determine_flavors(studio, local, all, token)
+    show_local, show_studio = determine_flavors(
+        studio, local, all, lambda: is_token_set(team)
+    )
+    if show_studio:
+        # Fails before the local lookup, which could fail first on a name that is
+        # only in Studio.
+        StudioClient(team=team).check_auth()
     if name:
         latest_only = False
 
     local_pairs = (
         list(list_datasets_local(catalog, name, include_removed=include_removed))
-        if all or local
+        if show_local
         else []
     )
     local_datasets = {(n, v) for n, v, _ in local_pairs}
     local_removed = {(n, v) for n, v, r in local_pairs if r}
     studio_datasets = (
         set(list_datasets_studio(team=team, name=name, include_removed=include_removed))
-        if all or studio
+        if show_studio
         else set()
     )
 
@@ -115,7 +117,7 @@ def list_datasets(
     rows = [
         _datasets_tabulate_row(
             name=n,
-            both=all or (local and studio),
+            both=show_local and show_studio,
             local_version=local_version,
             studio_version=studio_version,
             local_removed=local_removed,
@@ -214,14 +216,7 @@ def rm_dataset(
         # removing Studio dataset from CLI
         from datachain.studio import remove_studio_dataset
 
-        if Config().read().get("studio", {}).get("token"):
-            remove_studio_dataset(
-                team, name, namespace_name, project_name, version, force
-            )
-        else:
-            raise DataChainError(
-                "Not logged in to Studio. Log in with 'datachain auth login'."
-            )
+        remove_studio_dataset(team, name, namespace_name, project_name, version, force)
     else:
         try:
             project = catalog.metastore.get_project(project_name, namespace_name)
@@ -252,14 +247,9 @@ def edit_dataset(
     else:
         from datachain.studio import edit_studio_dataset
 
-        if Config().read().get("studio", {}).get("token"):
-            edit_studio_dataset(
-                team, name, namespace_name, project_name, new_name, description, attrs
-            )
-        else:
-            raise DataChainError(
-                "Not logged in to Studio. Log in with 'datachain auth login'."
-            )
+        edit_studio_dataset(
+            team, name, namespace_name, project_name, new_name, description, attrs
+        )
 
 
 def _timestamp(value: datetime) -> str:

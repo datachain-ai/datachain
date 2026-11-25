@@ -1,4 +1,7 @@
 import asyncio
+import itertools
+import logging
+import math
 import unicodedata
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -9,6 +12,8 @@ from datachain.utils import getenv_bool
 if TYPE_CHECKING:
     from .fsspec import RangeListedClient, ResultQueue
     from .listing_worker import Pool
+
+logger = logging.getLogger("datachain")
 
 # A range has one request in flight, so these cap both open ranges and requests.
 LIST_WORKERS = 16  # while this process fetches every page
@@ -31,6 +36,7 @@ class Page(NamedTuple):
     past_lo: str | None = None  # the first key listed past the start key
     past_hi: str | None = None  # the first key listed past ``hi``
     in_order: bool = True  # the keys came in the server's order
+    folders: tuple[str, ...] = ()  # with a delimiter, the folders past it
 
 
 class Keep:
@@ -260,6 +266,40 @@ class RangeListing:
             await self._seam(lo, 1, page.past_lo or "")
         return page
 
+    async def _cut(self, first_range: KeyRange, page: Page) -> None:
+        """After the first page, starts ranges at the folders past it that one
+        request with a delimiter names: a large listing starts spread over its
+        keys instead of splitting its way out of one."""
+        if self.delimiter or not self.client.NAMES_FOLDERS or page.last is None:
+            return
+        try:
+            async with self.own_requests:
+                level = await self.client._list_page(
+                    self.prefix, page.last, None, delimiter="/"
+                )
+        except Exception:
+            logger.debug("Listing %s: no folder cut", self.client.uri, exc_info=True)
+            return
+        if level.token is not None:
+            return  # more folders than one page names; where their keys lie is unknown
+        read_to = self.order(page.last)
+        if (level.first is not None and self.order(level.first) <= read_to) or any(
+            self.order(f) <= read_to and not page.last.startswith(f)
+            for f in level.folders
+        ):
+            self.splits = False  # the server ignored the start key
+            return
+        folders = sorted(
+            (f for f in level.folders if self.order(f) > read_to), key=self.order
+        )
+        folders = folders[:: math.ceil(len(folders) / self.max_ranges) or 1]
+        for lo, hi in itertools.pairwise([*folders, None]):
+            self.open_ranges += 1
+            self.ranges.put_nowait(KeyRange(lo or "", hi, self.order, 0))
+        if folders:
+            self.has_split = True
+            first_range.hi = folders[0]  # its next page is not asked for yet
+
     async def _read(self, key_range: KeyRange) -> None:
         """Reads the range a page at a time; the next page is on its way while
         this one waits for room in the result queue. Empty pages still go in
@@ -269,6 +309,9 @@ class RangeListing:
         try:
             while True:
                 rows, token = self._advance(key_range, page)
+                first_page = not key_range.lo and key_range.age == 1
+                if first_page and token is not None and self._may_split():
+                    await self._cut(key_range, page)
                 if token is not None:
                     next_page = asyncio.create_task(self._fetch(key_range, token))
                 await self.result_queue.put(rows)
