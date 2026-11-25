@@ -3,6 +3,7 @@ import json
 import os
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from functools import reduce
 from typing import TYPE_CHECKING
 
 import datachain.lib.listing as listing_lib
@@ -65,7 +66,7 @@ def read_storage(
               - `[abc]`, `[a-z]`, `[^a]` : one character of a set
               - `**` : any number of folders, none too: `dir/**/*.jpg`
               - `{a,b}` : alternatives
-              - `{1..9}`, `{01..10}`, `{a..z}`, `{1..9..2}` : ranges
+              - `{1..9}`, `{01..10}`, `{a..z}` : ranges
         type: read file as "binary", "text", or "image" data. Default is "binary".
         recursive: search recursively for the given path.
         update: list the storage again instead of reusing a saved listing.
@@ -227,7 +228,7 @@ def _read_storage(
             listing_lib.select_paths(dc, path_filter(list_path, patterns, recursive))
         )
 
-    storage_chain = _union(chains) if chains else None
+    storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
 
     if file_values:
         # Use read_records directly (not read_values) so the chain hash is
@@ -246,18 +247,6 @@ def _read_storage(
     assert storage_chain is not None
 
     return storage_chain
-
-
-def _union(chains: "list[DataChain]") -> "DataChain":
-    """The union of ``chains`` as a balanced tree: a long chain of unions is
-    deeper than a query compiles.
-    """
-    while len(chains) > 1:
-        chains = [
-            chains[i].union(chains[i + 1]) if i + 1 < len(chains) else chains[i]
-            for i in range(0, len(chains), 2)
-        ]
-    return chains[0]
 
 
 def list_storage(

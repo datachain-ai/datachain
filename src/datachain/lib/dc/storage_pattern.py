@@ -7,7 +7,7 @@ from itertools import pairwise
 from datachain.client.fsspec import is_cloud_uri
 from datachain.lib.listing import ListScope, PathFilter, list_folder
 
-_RANGE = re.compile(r"(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.\.(-?[0-9]+))?")
+_RANGE = re.compile(r"([0-9]+|[A-Za-z])\.\.([0-9]+|[A-Za-z])")
 
 
 def validate_cloud_bucket_name(uri: str) -> None:
@@ -52,17 +52,19 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
 
 
 def expand_brace_pattern(pattern: str) -> list[str]:
-    """``pattern`` with its braces expanded, as bash does: ``{a,b}`` lists the
-    alternatives, ``{1..9}`` and ``{a..z}`` a range, ``{1..9..2}`` one with a
-    step, and ``{01..10}`` one with zero-padded numbers. A brace with neither,
-    such as ``{a}``, stays as it is. Unlike bash, spaces around an alternative
-    are dropped: ``{jpg, png}``.
+    """Recursively expand brace patterns into multiple glob patterns.
+
+    Supports:
+    - Comma-separated lists: *.{mp3,wav}
+    - Numeric ranges: file{1..10}
+    - Zero-padded numeric ranges: file{01..10}
+    - Character ranges: file{a..z}
 
     Examples:
         "*.{mp3,wav}" -> ["*.mp3", "*.wav"]
         "file{1..3}" -> ["file1", "file2", "file3"]
         "file{01..03}" -> ["file01", "file02", "file03"]
-        "file{a..e..2}" -> ["filea", "filec", "filee"]
+        "file{a..c}" -> ["filea", "fileb", "filec"]
         "{a,b}/{c,d}" -> ["a/c", "a/d", "b/c", "b/d"]
     """
     start = 0
@@ -101,20 +103,19 @@ def expand_brace_pattern(pattern: str) -> list[str]:
 def _brace_range(body: str) -> list[str] | None:
     if not (match := _RANGE.fullmatch(body)):
         return None
-    first, last, step = match.groups()
-    if first.isalpha() != last.isalpha():
+    first, last = match.groups()
+    letters = first.isalpha()
+    if letters != last.isalpha():
         return None
-    step = abs(int(step or 1)) or 1
-    if first.isalpha():
-        start, stop = ord(first), ord(last)
-        sign = 1 if stop >= start else -1
-        return [chr(i) for i in range(start, stop + sign, sign * step)]
-    start, stop = int(first), int(last)
+    start, stop = (ord(first), ord(last)) if letters else (int(first), int(last))
     sign = 1 if stop >= start else -1
-    # an end such as "01" or "-01" pads every term to the longer end, as bash
-    padded = any(re.fullmatch(r"-?0[0-9]+", end) for end in (first, last))
+    terms = range(start, stop + sign, sign)
+    if letters:
+        return [chr(i) for i in terms]
+    # an end such as "01" pads every term to the longer end
+    padded = any(re.fullmatch("0[0-9]+", end) for end in (first, last))
     width = max(len(first), len(last)) if padded else 0
-    return [f"{n:0{width}d}" for n in range(start, stop + sign, sign * step)]
+    return [f"{n:0{width}d}" for n in terms]
 
 
 def storage_sources(
@@ -130,6 +131,8 @@ def storage_sources(
         bases: dict[str, dict[str | None, None]] = {}
         for expanded in expand_brace_pattern(str(uri)):
             base, pattern = split_uri_pattern(normalize_storage_uri(expanded))
+            if pattern and pattern.endswith("/"):
+                pattern += folder
             bases.setdefault(base, {})[pattern] = None
         sources += [
             (base, tuple(p or folder for p in patterns) if any(patterns) else ())

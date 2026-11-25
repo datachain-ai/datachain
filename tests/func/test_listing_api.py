@@ -204,6 +204,7 @@ def test_listing_single_object(cloud_test_catalog, versions):
         "dogs/dog{1,1*}",
         "{cats,dogs}/**/*{1,4}",
         "dogs/{,*/dog4}",
+        "d*/",
         "dogs/others/*",
         "none/zzz*",
     ],

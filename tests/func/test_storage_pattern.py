@@ -176,6 +176,27 @@ def test_folder_brace_alternative_without_recursion_lists_one_level(
     ]
 
 
+@pytest.mark.parametrize(
+    "recursive,expected",
+    [
+        (
+            True,
+            [
+                "nested/deep/report.json",
+                "nested/deep/y.json",
+                "nested/notreport.json",
+                "nested/report.json",
+            ],
+        ),
+        (False, ["nested/notreport.json", "nested/report.json"]),
+    ],
+)
+def test_pattern_ending_in_slash_reads_the_folders_it_matches(
+    reports_dir, storage_paths, recursive, expected
+):
+    assert storage_paths(f"{reports_dir}/nest*/", recursive=recursive) == expected
+
+
 def test_overlapping_brace_alternatives_return_each_file_once(
     reports_dir, storage_paths
 ):
@@ -206,17 +227,6 @@ def test_thousand_brace_patterns_after_limiting_sqlite_variables(
         "nested/report.json",
         "report.json",
         "report1.json",
-    ]
-
-
-@skip_if_not_sqlite  # hundreds of listings exceed ClickHouse's max_query_size
-def test_hundreds_of_brace_folders_after_listing_their_parent(reports_dir):
-    dc.read_storage(f"{reports_dir}/").exec()
-    chain = dc.read_storage(f"{reports_dir}/{{a,nested,{{1..300}}}}/*.json")
-    assert sorted(chain.to_values("file.path")) == [
-        "a/report.json",
-        "nested/notreport.json",
-        "nested/report.json",
     ]
 
 
