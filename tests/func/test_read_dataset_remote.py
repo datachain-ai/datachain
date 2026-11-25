@@ -198,7 +198,7 @@ def mock_export_endpoint_with_urls(requests_mock):
             "signed_urls": [
                 (
                     "https://studio-blobvault.s3.amazonaws.com/"
-                    f"datachain_ds_export_{version_file}.parquet.lz4"
+                    f"datachain_ds_export_{version_file}.parquet"
                 )
             ],
         }
@@ -223,15 +223,14 @@ def mock_export_status_completed(requests_mock):
 
 
 @pytest.fixture
-def mock_s3_parquet_download(requests_mock, compressed_parquet_data, dog_entries):
+def mock_s3_parquet_download(requests_mock, parquet_data, dog_entries):
     def _mock_download():
         # Generate different data for each version
         for version in ["1.0.0", "2.0.0"]:
-            parquet_data = compressed_parquet_data(dog_entries(version))
             requests_mock.get(
                 f"https://studio-blobvault.s3.amazonaws.com/"
-                f"datachain_ds_export_{version.replace('.', '_')}.parquet.lz4",
-                content=parquet_data,
+                f"datachain_ds_export_{version.replace('.', '_')}.parquet",
+                content=parquet_data(dog_entries(version)),
             )
 
     return _mock_download
@@ -246,10 +245,8 @@ def mock_dataset_rows_fetcher_status_check(mocker):
 
 
 @pytest.fixture
-def mock_studio_server(
-    remote_dataset_single_version, compressed_parquet_data, dog_entries
-):
-    parquet_data = compressed_parquet_data(dog_entries("1.0.0"))
+def mock_studio_server(remote_dataset_single_version, parquet_data, dog_entries):
+    content = parquet_data(dog_entries("1.0.0"))
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format, *args):
@@ -269,18 +266,18 @@ def mock_studio_server(
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(
-                    f'{{"export_id": 1, "signed_urls": ["http://localhost:{port}/data.parquet.lz4"]}}'.encode()
+                    f'{{"export_id": 1, "signed_urls": ["http://localhost:{port}/data.parquet"]}}'.encode()
                 )
             elif "/api/datachain/datasets/info" in self.path:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps(remote_dataset_single_version).encode())
-            elif "/data.parquet.lz4" in self.path:
+            elif "/data.parquet" in self.path:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/octet-stream")
                 self.end_headers()
-                self.wfile.write(parquet_data)
+                self.wfile.write(content)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -754,7 +751,7 @@ def test_read_dataset_remote_cleanup_on_download_failure(
     mock_dataset_info_endpoint(remote_dataset_single_version)
 
     requests_mock.get(
-        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0_0.parquet.lz4",
+        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0_0.parquet",
         status_code=500,
         text="Server error",
     )
@@ -787,11 +784,11 @@ def test_read_dataset_remote_cleanup_on_parse_failure(
     mock_dataset_info_endpoint(remote_dataset_single_version)
 
     requests_mock.get(
-        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0_0.parquet.lz4",
+        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0_0.parquet",
         content=b"not valid parquet",
     )
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(DataChainError, match="Failed to read dataset file from Studio"):
         dc.read_dataset(
             f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
             version="1.0.0",

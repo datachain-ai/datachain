@@ -3,6 +3,7 @@ import json
 import os
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy import Column, Integer, Table
 
 from datachain.data_storage.serializer import deserialize
@@ -10,6 +11,7 @@ from datachain.data_storage.sqlite import (
     SQLiteDatabaseEngine,
     get_db_file_in_memory,
 )
+from datachain.sql.types import Int64
 from tests.utils import skip_if_not_sqlite
 
 
@@ -112,3 +114,75 @@ def test_table_in_transaction(sqlite_db):
         sqlite_db.drop_table(Table("test_table_2", sqlite_db.metadata))
         assert not sqlite_db.has_table("test_table")
         assert not sqlite_db.has_table("test_table_2")
+
+
+def test_reflect_table_temp_table_and_view(sqlite_db):
+    sqlite_db.execute_str("CREATE TEMP TABLE tmp_rel (x INTEGER)")
+    assert "x" in sqlite_db.reflect_table("tmp_rel").c
+
+    sqlite_db.execute_str("CREATE VIEW view_rel AS SELECT 1 AS x")
+    assert "x" in sqlite_db.reflect_table("view_rel").c
+    assert sqlite_db.has_table("view_rel") is False
+
+
+def test_get_table_reconnects_and_reflects_added_column(tmp_dir):
+    db_path = os.fspath(tmp_dir / "reconnect_reflect.db")
+    with SQLiteDatabaseEngine.from_db_file(db_path) as db:
+        db.execute_str("CREATE TABLE MixedCaseRel (x INTEGER)")
+        assert "x" in db.get_table("mixedcaserel").c
+
+        db.add_column("MixedCaseRel", sa.Column("y", Int64))
+        db.close()
+        assert "x" in db.get_table("mixedcaserel").c
+        assert db.is_closed is False
+        refreshed = db.reflect_table("MixedCaseRel")
+        assert "y" in refreshed.c
+
+
+def test_reflect_table_column_metadata(sqlite_db):
+    sqlite_db.execute_str(
+        "CREATE TABLE col_meta"
+        " (id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 7, opt TEXT)"
+    )
+    sqlite_db.execute_str("INSERT INTO col_meta (id) VALUES (1)")
+    tbl = sqlite_db.reflect_table("col_meta")
+    assert tbl.c.id.primary_key is True
+    assert tbl.c.x.primary_key is False
+    assert tbl.c.x.nullable is False
+    assert tbl.c.opt.nullable is True
+    assert tbl.c.x.server_default is not None
+    assert sqlite_db.execute_str("SELECT id, x FROM col_meta").fetchall() == [(1, 7)]
+
+
+def test_reflect_table_updates_recreated_schema(sqlite_db):
+    sqlite_db.execute_str(
+        "CREATE TABLE recreated_rel (id INTEGER PRIMARY KEY, x INTEGER)"
+    )
+    first = sqlite_db.reflect_table("recreated_rel")
+    assert first.c.id.primary_key is True
+    assert isinstance(first.c.x.type, sa.Integer)
+
+    sqlite_db.execute_str("DROP TABLE recreated_rel")
+    sqlite_db.execute_str("CREATE TABLE recreated_rel (id INTEGER, x TEXT PRIMARY KEY)")
+    second = sqlite_db.reflect_table("recreated_rel")
+    assert second.c.id.primary_key is False
+    assert second.c.x.primary_key is True
+    assert isinstance(second.c.x.type, sa.Text)
+
+    sqlite_db.execute_str("DROP TABLE recreated_rel")
+    sqlite_db.execute_str("CREATE TABLE recreated_rel (id INTEGER PRIMARY KEY)")
+    third = sqlite_db.reflect_table("recreated_rel")
+    assert list(third.c.keys()) == ["id"]
+
+
+def test_reflect_table_includes_generated_columns_and_skips_hidden_columns(sqlite_db):
+    sqlite_db.execute_str(
+        "CREATE TABLE measure"
+        " (x INTEGER, doubled INTEGER GENERATED ALWAYS AS (2*x) STORED)"
+    )
+    measure = sqlite_db.reflect_table("measure")
+    assert list(measure.c.keys()) == ["x", "doubled"]
+    assert measure.c.doubled.computed is not None
+
+    sqlite_db.execute_str("CREATE VIRTUAL TABLE vt_rel USING fts5(body)")
+    assert list(sqlite_db.reflect_table("vt_rel").c.keys()) == ["body"]

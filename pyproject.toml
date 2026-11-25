@@ -81,7 +81,6 @@ audio = [
   "soundfile"
 ]
 remote = [
-  "lz4",
   "requests>=2.22.0"
 ]
 vector = [
