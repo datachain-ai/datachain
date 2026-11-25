@@ -655,7 +655,10 @@ def test_glob_match_is_linear_in_stars():
         ("d*/x", (), True, True, None),
         ("dir/", ("*.txt",), True, False, "dir/*.txt"),
         ("dir/", ("**/*.txt",), True, True, "dir/*.txt"),
+        ("dir/", ("**",), True, True, "dir/*"),
         ("", ("a?",), False, False, "a?"),
+        ("", ("[a-**]",), True, False, "[a-**]"),
+        ("", ("[^a-**]",), True, False, "[^a-**]"),
     ],
 )
 def test_select_paths_keeps_filter_steps(

@@ -215,7 +215,9 @@ def _glob(segments: list[str]) -> str:
     """
     *folders, name = segments
     glob_pattern = "".join("*" if s == "**" else f"{s}/" for s in folders)
-    return re.sub(r"\*\*+", "*", glob_pattern + ("*" if name == "**" else name))
+    if name == "**" or (glob_pattern[-1:] == "*" and name[:1] == "*"):
+        name = name[1:]  # one star for "**" or for "**/*.jpg"
+    return glob_pattern + name
 
 
 def _glob_is_exact(segments: list[str], descends: bool) -> bool:
