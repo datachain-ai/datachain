@@ -2480,29 +2480,16 @@ class DataChain:
                 on, right_on, f"Could not resolve {', '.join(errors)}"
             )
 
+        query = self._query.join(
+            right_ds._query, sqlalchemy.and_(*ops), inner, full, rname
+        )
+        query.feature_schema = None
+        ds = self._evolve(query=query)
+
         # Note: merge drops sys signals from both sides, make sure to not include it
         # in the resulting schema
         signals_schema = self.signals_schema.clone_without_sys_signals()
         right_signals_schema = right_ds.signals_schema.clone_without_sys_signals()
-
-        def _model_tags(schema: "SignalSchema") -> tuple[tuple[str, str], ...]:
-            return tuple(
-                (f"{k}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}", arm_selector(v))
-                for k, v in schema.values.items()
-                if ModelStore.is_pydantic(v)
-            )
-
-        query = self._query.join(
-            right_ds._query,
-            sqlalchemy.and_(*ops),
-            inner,
-            full,
-            rname,
-            left_tags=_model_tags(signals_schema) if full else (),
-            right_tags=_model_tags(right_signals_schema) if not inner else (),
-        )
-        query.feature_schema = None
-        ds = self._evolve(query=query)
 
         ds.signals_schema = signals_schema.merge(
             right_signals_schema,
@@ -3114,25 +3101,32 @@ class DataChain:
     def to_lance(
         self,
         path: str | os.PathLike[str],
+        *,
         chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE,
         fs_kwargs: dict[str, Any] | None = None,
-        *,
         mode: Literal["create", "overwrite"] = "create",
         table: bool = True,
+        storage_options: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Save chain to a Lance table or standalone `.lance` data file.
 
+        `DataModel` signals are stored as Arrow `struct` columns so field paths
+        such as `p.x` work natively in Lance, LanceDB, and DuckDB.
+
         Parameters:
             path: Target path or storage URI (`s3://`, `gs://`, `az://`, or `hf://`
                 with `table=False`).
-            chunk_size: Rows per chunk to bound memory.
-            fs_kwargs: Storage configuration forwarded to Lance or fsspec.
-            mode: `"create"` (default, fails if target exists; best-effort check on
-                `hf://`) or `"overwrite"` (rechecks the original table manifest
-                before commit, leaving a small commit race window).
-            table: If `True` (default), write a versioned Lance table; if `False`,
-                write a single standalone `.lance` v2 file via fsspec.
+            chunk_size: Rows per chunk to bound memory while reading the chain.
+            fs_kwargs: Storage configuration (fsspec key names) forwarded to
+                fsspec or translated for Lance.
+            mode: `"create"` (default, fails with `FileExistsError` if target
+                exists) or `"overwrite"` (commits a new table version or replaces
+                the standalone file).
+            table: If `True` (default), write a versioned Lance table directory;
+                if `False`, write a single standalone `.lance` v2 file via fsspec.
+            storage_options: Optional Lance storage options (Lance key names),
+                merged over translated `fs_kwargs`.
             kwargs: Forwarded to `write_fragments` or `LanceFileWriter`.
         """
         from datachain.lib.arrow import write_lance
@@ -3148,6 +3142,7 @@ class DataChain:
             mode=mode,
             table=table,
             fs_kwargs=fs_kwargs,
+            storage_options=storage_options,
             **kwargs,
         )
 

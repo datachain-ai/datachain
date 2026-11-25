@@ -28,6 +28,18 @@ chain.to_json("output/results.json")
 chain.to_storage("s3://bucket/output/", signal="file")
 ```
 
+### Lance tables
+
+`to_lance()` writes a versioned Lance table directory by default (`table=True`), storing `DataModel` signals as Arrow `struct` columns so nested fields such as `p.x` work natively in Lance, LanceDB, and DuckDB:
+
+```python
+chain.to_lance("s3://bucket/results.lance", mode="overwrite")
+chain.to_lance("output/shard.lance", table=False)  # single standalone .lance file
+```
+
+- `mode="create"` (default) raises `FileExistsError` if the target table or file already exists; `mode="overwrite"` commits a new table version (or replaces a standalone file).
+- `fs_kwargs` accepts fsspec option names; `storage_options` accepts Lance option names and overrides translated keys.
+
 ## Export Placement Strategies
 
 When exporting to storage, the `placement` parameter controls how file paths are constructed:

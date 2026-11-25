@@ -54,9 +54,10 @@ labels = dc.read_csv("s3://bucket/csvs/", delimiter=";")
 meta = dc.read_json("gs://bucket/annotations.json", jmespath="images")
 captions = dc.read_json("gs://bucket/coco.json", jmespath="annotations")
 
-# Parquet and Lance -- supports glob patterns (Parquet also Hive partitioning)
+# Parquet and Lance -- globs match standalone files; pass a table directory path for a Lance table
 data = dc.read_parquet("s3://bucket/data/*.parquet")
 data = dc.read_parquet("s3://bucket/202{1..4}/{yellow,green}-{01..12}.parquet")
+data = dc.read_lance("s3://bucket/table.lance")
 data = dc.read_lance("s3://bucket/shards/*.lance")
 ```
 
@@ -74,7 +75,7 @@ code = gen_datamodel_code("s3://bucket/data.json", jmespath="images")
 
 ### Selecting and naming CSV, Parquet, and Lance columns
 
-When `columns` and `output` are omitted, DataChain keeps only the columns your chain actually uses. When you narrow columns with `select()`, `group_by()`, `count()`, or `gen()`, Parquet and Lance read only those columns from the file (remote Lance files are cached locally first); CSV and JSON still parse the file and store only those columns. You can place `filter()`, `order_by()`, and `mutate()` before `select()` in any order — DataChain keeps only the columns needed by those steps. After `map()`, `select_except()`, or a join, every column is read.
+When `columns` and `output` are omitted, DataChain keeps only the columns your chain actually uses. When you narrow columns with `select()`, `group_by()`, `count()`, or `gen()`, Parquet and Lance read only those columns from the file (Lance tables use range reads and are not cached; remote standalone `.lance` files are downloaded in full, or cached when `cache=True`); CSV and JSON still parse the file and store only those columns. You can place `filter()`, `order_by()`, and `mutate()` before `select()` in any order — DataChain keeps only the columns needed by those steps. After `map()`, `select_except()`, or a join, every column is read.
 
 For Parquet and Lance, `filter()` conditions on basic columns (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&`, `|`, `~`, `in_`, `not_in`, `between`, `is_`, `is_not`) are applied while reading the file so that only the matching rows and required columns are read. `filter()` does not have to come first: `filter()`, `select()`, and `order_by()` can be combined in any order and quantity before steps like `limit()`, `offset()`, `mutate()`, `distinct()`, `group_by()`, `gen()`, `map()`, or joins.
 
@@ -162,6 +163,20 @@ dc.read_parquet("docs.parquet", columns=["value.Text"], output={"t": Text | None
 ```
 
 With `columns=` or `output=`, one read can't mix these files with ordinary Parquet files. With `source=True`, the default, the reader adds its own `source`, which replaces a `source` stored by an earlier read. A stored `source` you pick with `columns=` is kept instead, and if the name `source` is taken, the reader's is named `c0_source`.
+
+#### Lance tables
+
+`dc.read_lance()` reads either versioned Lance tables (directories with `_versions/`) or standalone `.lance` v2 files:
+
+```python
+table = dc.read_lance("s3://bucket/events.lance", version=2)
+tagged = dc.read_lance("s3://bucket/events.lance", version="v1_release")
+```
+
+- Pass one path per table; glob patterns match standalone `.lance` files only. A single `read_lance()` call cannot mix tables and standalone files — read each and `union()` them.
+- Lance tables are always read directly via range reads and are never cached (`settings(cache=True)` applies only to standalone `.lance` files).
+- For table rows, `source.index` is Lance's row id and `source.file` is the fragment file under `data/`.
+- `client_config` takes fsspec option names; `storage_options` takes Lance option names and overrides translated keys.
 
 ## WebDataset
 

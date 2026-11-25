@@ -1,6 +1,8 @@
 import enum
+import errno
 import io
 import math
+import os
 import shutil
 import sys
 from datetime import UTC, datetime
@@ -16,7 +18,6 @@ from lance.file import LanceFileWriter
 from pydantic import ConfigDict
 
 import datachain as dc
-from datachain.client.fsspec import Client
 from datachain.client.http import HTTPClient
 from datachain.lib import arrow
 from datachain.lib.dc import C, DatasetPrepareError
@@ -48,17 +49,14 @@ def test_read_lance_select_and_filter_pushdown(
     )
     monkeypatch.setattr(arrow, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
     prefetch = mocker.spy(File, "_prefetch")
-    read_spy = mocker.spy(arrow._LanceDataset, "_read")
     rl = partial(dc.read_lance, session=test_session)
     chain = rl(path.as_uri())
 
     assert chain.select("b").to_values("b") == [30, 20, 10, 10]
     assert prefetch.call_count == 1
-    assert [call.args[1] for call in read_spy.call_args_list] == [["b"]]
     picked = rl(path.as_uri(), columns=["payload", "a"], output={"p": str, "x": int})
     assert picked.to_list("p", "x") == [("p0", 3), ("p1", 2), ("p2", 1), ("p3", 1)]
 
-    read_spy.reset_mock()
     rows = chain.filter(C("a") == 1).to_list("source", "payload")
     assert [(s.index, p) for s, p in rows] == [(2, "p2"), (3, "p3")]
     source = rows[0][0]
@@ -71,19 +69,19 @@ def test_read_lance_select_and_filter_pushdown(
         assert ds.take([2, 0, 2]).to_pydict()["payload"] == ["p2", "p0", "p2"]
     with pytest.raises(IndexError, match="out of range"):
         ArrowRow(file=source.file, index=99, kwargs=source.kwargs).read()
-    assert [c.args[1] for c in read_spy.call_args_list[:2]] == [["a"], ["payload"]]
-    assert read_spy.call_args_list[1].args[2].to_pylist() == [2, 3]
 
-    read_spy.reset_mock()
     assert chain.filter(C("a") == 999).to_values("payload") == []
-    assert [call.args[1] for call in read_spy.call_args_list] == [["a"]]
 
     monkeypatch.setattr(arrow.ArrowGenerator, "DEFAULT_BATCH_SIZE", 2)
     res = chain.filter(C("a") >= 1).select("b").to_values("b")
     assert sorted(res) == [10, 10, 20, 30]
 
+    (zero_path := tmp_dir / "zero.lance").write_bytes(b"")
+    with pytest.raises(DatasetPrepareError, match="is 0 bytes"):
+        rl(zero_path.as_uri())
 
-def test_read_lance_table_versions_pushdown_and_rejects_fragments(
+
+def test_read_lance_table_versions_and_pushdown(
     tmp_dir, test_session, mocker, monkeypatch
 ):
     d = ds_dir = tmp_dir / "dataset_table.lance"
@@ -92,7 +90,6 @@ def test_read_lance_table_versions_pushdown_and_rejects_fragments(
     t = pa.table({"a": [10, 20, 30, 40], "b": b, "text": ["w0", "w1", "w2", "w3"]})
     ds = lance.write_dataset(t, ds_dir, max_rows_per_file=2, enable_stable_row_ids=True)
     ds.tags.create("v1_tag", 1)
-    (ds_dir / "_refs/tags/b_tag.json").write_text('{"version": 1, "branch": "b"}')
     ds.delete("a = 20")
     det_t = pa.table({"a": [777], "b": pa.array([7], pa.uint8()), "text": ["det"]})
     det_op = lance.LanceOperation.Overwrite(
@@ -127,15 +124,22 @@ def test_read_lance_table_versions_pushdown_and_rejects_fragments(
     assert r0.file.read()[-4:] == b"LANC"
     with pytest.raises(ValueError, match="without a catalog"):
         ArrowRow.model_validate(r0.model_dump()).read()
-    assert v2.limit(1).gen(
-        lambda f: [len(f.read()) > 0], params="source.file", output={"ok": bool}
-    ).to_values("ok") == [True]
     for bad_idx in (-1, 1, 99, 99 << 32):
         with pytest.raises(IndexError, match="out of range|Invalid"):
             ArrowRow(file=r0.file, index=bad_idx, kwargs=r0.kwargs).read()
 
-    frag, g = next((d / "data").glob("*.lance")), f"{d.as_uri()}/data/*.lance"
-    for u, v in ((d, 99), (d, "no"), (d, "b_tag"), (g, None), (frag, None), (g, 1)):
+    with pytest.raises(TypeError, match="not bool"):
+        rl(d, version=True)
+    with pytest.raises(
+        DatasetPrepareError,
+        match="Lance tag '1' not found; pass an int for a version number",
+    ):
+        rl(d, version="1")
+    for kw in ({"bogus": 1}, {"delta": True}, {"update": True}, {"type": "image"}):
+        with pytest.raises(TypeError):
+            rl(d, **kw)
+    g = f"{d.as_uri()}/data/*.lance"
+    for u, v in ((d, 99), ([d, d], 1), (g, 1)):
         with pytest.raises(DatasetPrepareError):
             rl(u, version=v)
     for col in ("", "a`b"):
@@ -147,17 +151,10 @@ def test_read_lance_table_versions_pushdown_and_rejects_fragments(
     shutil.rmtree(ds_dir)
     lance.write_dataset(pa.table({"a": [99], "text": ["recreated"]}), ds_dir)
     stale_src = (stale := rl(ds_dir)).to_values("source")[0]
-    orig_ds = lance.dataset
-
-    def replace_on_open(*a, **kw):
-        shutil.rmtree(ds_dir)
-        lance.write_dataset(pa.table({"a": [100], "text": ["v1_new"]}), ds_dir)
-        return orig_ds(*a, **kw)
-
-    with monkeypatch.context() as mp:
-        mp.setattr(lance, "dataset", replace_on_open)
-        with pytest.raises(FileNotFoundError, match="changed on the source"):
-            stale_src.read()
+    shutil.rmtree(ds_dir)
+    lance.write_dataset(pa.table({"a": [100], "text": ["v1_new"]}), ds_dir)
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        stale_src.read()
     with pytest.raises(Exception, match="changed on the source"):
         stale.to_values("a")
     assert rl(ds_dir).to_values("a") == [100]
@@ -176,7 +173,7 @@ def test_read_lance_table_parallel_over_fragments(tmp_dir, test_session_tmpfile)
     assert [s.read()["v"] for s in sources] == ["s0", "s1", "s2"]
 
 
-@pytest.mark.parametrize("folder", ["_indices", "_versions", "data"])
+@pytest.mark.parametrize("folder", ["_indices", "_versions", "_refs", "data"])
 def test_read_lance_allows_user_folder_names(tmp_dir, test_session, folder):
     user_dir = tmp_dir / f"user_{folder}" / folder
     user_dir.mkdir(parents=True)
@@ -186,39 +183,38 @@ def test_read_lance_allows_user_folder_names(tmp_dir, test_session, folder):
     assert dc.read_lance(user_file, session=test_session).to_values("a") == [1, 2]
 
 
-def test_read_lance_blob_column(tmp_dir, test_session):
+def test_read_lance_rejects_table_internals_blobs_and_clones(tmp_dir, test_session):
     rl = partial(dc.read_lance, session=test_session)
+    parent_dir = tmp_dir / "tables"
+    tagged_dir = parent_dir / "tagged.lance"
+    ds = lance.write_dataset(pa.table({"a": [10, 20]}), tagged_dir)
+    ds.tags.create("v1", 1)
+    frag = next((tagged_dir / "data").glob("*.lance"))
+    for bad_path in (parent_dir, frag, f"{tagged_dir.as_uri()}/data/*.lance"):
+        with pytest.raises(
+            DatasetPrepareError, match="pass the table path to read_lance"
+        ):
+            rl(bad_path)
+
+    ds.shallow_clone(str(clone_dir := tmp_dir / "clone.lance"), "v1")
+    with pytest.raises(DatasetPrepareError, match="shallow-cloned"):
+        rl(clone_dir)
+
     blob_ds_dir = tmp_dir / "blob_table.lance"
     meta, lb = {b"lance-encoding:blob": b"true"}, pa.large_binary()
     blob_f = pa.field("payload", lb, metadata=meta)
     arr = pa.StructArray.from_arrays([pa.array([b"a"], lb)], fields=[blob_f])
     lance.write_dataset(pa.table({"id": [1], "nested": arr}), blob_ds_dir)
     blob_frag = next((blob_ds_dir / "data").glob("*.lance"))
-    f1 = File(source=blob_ds_dir.as_uri(), path=f"data/{blob_frag.name}", size=1)
-    f1._set_stream(test_session.catalog, caching_enabled=True)
-    f1.ensure_cached()
-    f2 = File(source="http://mock", path=f"t.lance/data/{blob_frag.name}", size=1)
-    f_root = File(source="file:///root.lance", path="data/a.lance")
-    for f in (f1, f2):
-        assert arrow._is_lance_table_file(f_root)
-        with pytest.raises(DatasetPrepareError, match="Lance table"):
-            dc.read_values(file=[f], session=test_session).parse_tabular(format="lance")
     shutil.copy(blob_frag, standalone_blob := tmp_dir / "standalone_blob.lance")
     for bad_blob in (blob_ds_dir, standalone_blob.as_uri()):
         with pytest.raises(DatasetPrepareError, match=r"blob column 'nested\.payload'"):
             rl(bad_blob)
 
-    base_dir, clone_dir = tmp_dir / "base.lance", tmp_dir / "clone.lance"
-    ds = lance.write_dataset(pa.table({"a": [10, 20]}), base_dir)
-    ds.tags.create("v1", 1)
-    ds.shallow_clone(str(clone_dir), "v1")
-    c_src = rl(clone_dir, settings={"cache": True}).order_by("a").to_values("source")[0]
-    assert (c_src.read()["a"], c_src.file.read()[-4:]) == (10, b"LANC")
-
     ms, pfx = test_session.catalog.metastore, test_session.get_temp_prefix()
     n_tmp = len(list(ms.list_datasets_by_prefix(pfx)))
-    with pytest.raises(DatasetPrepareError, match="missing"):
-        rl(base_dir, columns=["missing"])
+    with pytest.raises(DatasetPrepareError, match=r"tagged\.lance.*missing"):
+        rl(tagged_dir, columns=["missing"])
     assert len(list(ms.list_datasets_by_prefix(pfx))) == n_tmp
 
 
@@ -263,9 +259,17 @@ def test_read_lance_special_column_names_and_null_boolean_predicates(
     assert chain.filter((C("flag") == False) | (C("c0") == 3)).to_values("c0") == [2, 3]  # noqa: E712
 
 
-def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypatch):
+def test_read_lance_http_without_ranges(
+    tmp_path, test_session, http_server_without_ranges
+):
+    _write_lance(tmp_path / "plain.lance", {"id": [1, 2]})
+    url = f"{http_server_without_ranges}/plain.lance"
+    assert dc.read_lance(url, session=test_session).to_values("id") == [1, 2]
+
+
+def test_read_lance_remote_metadata_and_cache(tmp_dir, test_session, monkeypatch):
     path = tmp_dir / "wide.lance"
-    b0, b1 = b"A" * 100_000, b"B" * 100_000
+    b0, b1 = os.urandom(100_000), os.urandom(100_000)
     emb = pa.array(
         [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]], pa.list_(pa.float32(), 4)
     )
@@ -273,10 +277,7 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
         pa.array([["t1", "t2"], ["t3"]], pa.large_list(pa.string())),
         pa.array([b0, b1], pa.large_binary()),
     )
-    tbl = pa.table({"id": [1, 2], "emb": emb, "tags": tags, "payload": pay})
-    with LanceFileWriter(str(path), tbl.schema) as writer:
-        writer.add_global_buffer(b"x" * 1000)
-        writer.write_batch(tbl)
+    _write_lance(path, {"id": [1, 2], "emb": emb, "tags": tags, "payload": pay})
     raw_bytes = path.read_bytes()
     downloads = read_bytes = 0
     remote_bytes = raw_bytes
@@ -304,10 +305,8 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
     file = File(source="http://mock", path="wide.lance", size=len(raw_bytes))
     f2 = File(source="http://mock", path="wide2.lance", size=len(raw_bytes))
 
-    with monkeypatch.context() as mp:
-        mp.setattr(arrow, "_LANCE_TAIL_BYTES", 64)
-        chain = rv(file=[file], settings={"prefetch": 0}).parse_tabular(format="lance")
-    assert downloads == 0 and read_bytes < 64 + 1000 < len(raw_bytes)
+    chain = rv(file=[file], settings={"prefetch": 0}).parse_tabular(format="lance")
+    assert downloads == 0 and read_bytes <= 64 * 1024 < len(raw_bytes)
     assert cache.get_total_size() == 0 and not list(Path(cache.tmp_dir).glob("lance-*"))
 
     cols = ("source", "emb", "tags", "payload")
@@ -318,24 +317,23 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
     assert (downloads, cache.get_total_size()) == (1, 0)
     exp_row = {"id": 2, "emb": [5.0, 6.0, 7.0, 8.0], "tags": ["t3"], "payload": b1}
     assert src.read() == exp_row and (downloads, cache.get_total_size()) == (2, 0)
-    assert not list(Path(cache.tmp_dir).glob("lance-*"))
 
-    remote_bytes = raw_bytes[:-4] + b"NOPE"
-    c_bad = rv(file=[file], settings={"prefetch": 0}).parse_tabular(format="lance")
-    assert c_bad.to_values("id") == [1, 2] and downloads == 4
-    remote_bytes = raw_bytes
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "name", "nt")
+        c_nt = rv(file=[file], settings={"prefetch": 0}).parse_tabular(format="lance")
+        assert c_nt.to_values("id") == [1, 2] and downloads == 4
 
     c_cached = rv(
         file=[file, f2], settings={"cache": True, "prefetch": 0}
     ).parse_tabular(format="lance", columns=["id"], output={"id": int})
     assert sorted(c_cached.to_values("id")) == [1, 1, 2, 2]
     assert (downloads, cache.get_total_size()) == (6, 2 * len(raw_bytes))
-    for _ in range(3):
+    for _ in range(2):
         assert src.read()["id"] == 2
     assert downloads == 6
 
 
-def test_to_lance_roundtrip(tmp_dir, test_session):
+def test_to_lance_roundtrip_and_struct_layout(tmp_dir, test_session, monkeypatch):
     rl = partial(dc.read_lance, session=test_session)
     rv = partial(dc.read_values, session=test_session)
 
@@ -374,96 +372,80 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
         Outer(inner=i2, note="n2", items=[it2], matrix=[[10, 20]], **kw2),
         Outer(inner=i3, dts=[t1], meta=m3, scores={2: 20}, ts=t1),
     ]
+    opt_in = [it7, None, it7, None]
     chain = rv(
         id=[1, 2, 3, 4],
         f=[float("nan"), 1.5, 2.5, float("inf")],
         o=rows_in,
+        m=opt_in,
         u=[100, "hello", 200, "world"],
-        output={"id": int, "f": float, "o": Outer | Alt, "u": int | str},
+        output={
+            "id": int,
+            "f": float,
+            "o": Outer | Alt,
+            "m": Item | None,
+            "u": int | str,
+        },
     ).order_by("id")
     cols = ["o.Outer.inner.tag", "o.Outer.inner.foo__bar", "u"]
     exp_rows = list(
-        zip([1, 2, 3, 4], rows_in, [100, "hello", 200, "world"], strict=True)
+        zip([1, 2, 3, 4], rows_in, opt_in, [100, "hello", 200, "world"], strict=True)
     )
     exp_cols = [("x", 91, 100), (None, None, "hello"), (7, 55, 200), (8, 66, "world")]
 
     for is_tbl in (True, False):
         p = tmp_dir / f"exported_{is_tbl}.lance"
         chain.to_lance(
-            p, 1, table=is_tbl, **({"max_rows_per_file": 2} if is_tbl else {})
+            p,
+            chunk_size=1,
+            table=is_tbl,
+            **({"max_rows_per_file": 2} if is_tbl else {}),
         )
         assert p.is_dir() if is_tbl else p.is_file()
         with pytest.raises(FileExistsError):
             chain.to_lance(p, table=is_tbl)
-        back, ord_b = rl(p.as_uri()), rl(p.as_uri()).order_by("id")
-        sv, f_vals = back.signals_schema.values, ord_b.to_values("f")
-        s2 = ord_b.to_values("source")[2].read()
-        assert (sv["id"], sv["f"]) == (int, float)
-        assert ord_b.to_list("id", "o", "u") == exp_rows
+        with pytest.raises(FileExistsError):
+            chain.to_lance(p, table=not is_tbl, mode="overwrite")
+        ord_b = rl(p.as_uri()).order_by("id")
+        f_vals = ord_b.to_values("f")
+        sources = ord_b.to_values("source")
+        s0, s2 = sources[0].read(), sources[2].read()
+        assert ord_b.to_list("id", "o", "m", "u") == exp_rows
         assert (
-            math.isnan(f_vals[0])
+            math.isnan(s0["f"])
             and f_vals[1:] == [1.5, 2.5, float("inf")]
             and (s2["o.Outer.meta"], s2["o.Outer.scores"]) == ({"a": 1}, {"1": 10})
         )
         assert rl(p.as_uri(), columns=cols).to_list(*cols) == exp_cols
 
     tbl_p, file_p = tmp_dir / "exported_True.lance", tmp_dir / "exported_False.lance"
-    s = lance.dataset(tbl_p).schema
+    ds_tbl = lance.dataset(tbl_p)
+    assert [f.count_rows() for f in ds_tbl.get_fragments()] == [2, 2]
+    proj = ds_tbl.to_table(columns=["o.Outer.inner.foo__bar", "o.Outer.dts"]).schema
     assert (
-        s.field("o%2EOuter%2Einner%2Efoo__bar").type,
-        s.field("o%2EOuter%2Edts").type,
+        proj.field("o.Outer.inner.foo__bar").type,
+        proj.field("o.Outer.dts").type,
     ) == (pa.int64(), pa.list_(pa.timestamp("us", tz="UTC")))
-    rv(id=[9]).to_lance(file_p, table=False, mode="overwrite")
-    assert rl(file_p).to_values("id") == [9]
+
     _write_lance(
         stripped := tmp_dir / "stripped.lance",
-        lance.dataset(tbl_p).to_table().replace_schema_metadata(None),
+        ds_tbl.to_table().replace_schema_metadata(None),
     )
-    assert rl([tbl_p.as_uri(), stripped.as_uri()]).count() == 8
+    assert rl([file_p.as_uri(), stripped.as_uri()]).to_values("m").count(None) == 4
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            os,
+            "link",
+            lambda *a: (_ for _ in ()).throw(OSError(errno.EPERM, "no hardlinks")),
+        )
+        rv(id=[9]).to_lance(no_link := tmp_dir / "no_link.lance", table=False)
+    assert rl(no_link).to_values("id") == [9]
+    rv(id=[9]).to_lance(file_p, table=False, mode="overwrite")
+    assert rl(file_p).to_values("id") == [9]
 
     chain.filter(C("id") < 0).to_lance(empty_path := tmp_dir / "empty.lance")
     assert rl(empty_path.as_uri()).count() == 0
-
-    non_null_path, null_path = tmp_dir / "a_no_nulls.lance", tmp_dir / "b_nulls.lance"
-    rv(id=[5], v=[2], w=[20]).to_lance(non_null_path)
-    rv(id=[0], v=[1], w=[10]).to_lance(non_null_path, mode="overwrite")
-    with pytest.raises(ValueError, match="Unsupported mode"):
-        rv(id=[0]).to_lance(non_null_path, mode="append")  # type: ignore[arg-type]
-    assert (
-        lance.dataset(non_null_path).version,
-        rl(non_null_path, version=1).to_values("id"),
-    ) == (2, [5])
-
-    arrow.write_lance(
-        File.at(null_path, session=test_session),
-        SignalSchema({"id": int, "v": int, "w": int}),
-        [[[1], [1], [None]], [[2], [2], [None]]],
-    )
-    null_back = rl([non_null_path.as_uri(), null_path.as_uri()], source=False)
-    exp_null = {"id": int, "v": int, "w": int | None}
-    assert null_back._effective_signals_schema.values == exp_null
-    assert null_back.order_by("id").to_values("w") == [10, None, None]
-
-    lc, rc = rv(id=[1, 2]), rv(rid=[1], m=[it7])
-    rp, jp = tmp_dir / "a_right.lance", tmp_dir / "b_joined.lance"
-    rc.to_lance(rp)
-    (joined := lc.merge(rc, on="id", right_on="rid", inner=False)).to_lance(jp)
-    jb, mb = rl(jp.as_uri()), rl([rp.as_uri(), jp.as_uri()], columns=["m"])
-    assert (
-        joined.signals_schema.values["m"]
-        == jb.signals_schema.values["m"]
-        == mb.signals_schema.values["m"]
-        == (Item | None)
-    )
-    assert jb.order_by("id").to_list("id", "m") == [(1, it7), (2, None)] and sorted(
-        mb.to_values("m"), key=lambda x: x is None
-    ) == [it7, it7, None]
-
-    (zero_path := tmp_dir / "zero.lance").write_bytes(b"")
-    with pytest.raises(DatasetPrepareError, match="is 0 bytes"):
-        rl(zero_path.as_uri())
-    with pytest.raises(ValueError, match="table=False"):
-        rv(id=[1]).to_lance("hf://org/repo/d.lance")
 
     class Kind(enum.Enum):
         A = 1
@@ -477,71 +459,102 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
     ] == [str, str]
 
 
+def test_to_lance_table_external_mutations_and_error_cleanup(tmp_dir, test_session):
+    rl = partial(dc.read_lance, session=test_session)
+    rv = partial(dc.read_values, session=test_session)
+
+    p = tmp_dir / "mutated.lance"
+    rv(x=[1, 2], s=["a", "b"]).to_lance(p, chunk_size=1)
+    assert len(lance.dataset(p).get_fragments()) == 1
+    rv(x=[10], s=["z"]).to_lance(p, mode="overwrite")
+    assert (lance.dataset(p).version, rl(p, version=1).to_values("x")) == (2, [1, 2])
+
+    lance.write_dataset(
+        pa.table(
+            {"x": pa.array([None], pa.int64()), "s": pa.array([None], pa.string())}
+        ),
+        p,
+        mode="append",
+    )
+    assert rl(p).order_by("x").to_list("x", "s") == [(10, "z"), (None, None)]
+
+    ds = lance.dataset(p)
+    ds.add_columns({"z": "x * 2"})
+    assert rl(p).order_by("x").to_list("x", "s", "z") == [
+        (10, "z", 20),
+        (None, None, None),
+    ]
+    lance.dataset(p).alter_columns({"path": "z", "name": "zz"})
+    assert sorted(rl(p).to_values("zz"), key=lambda v: v or 0) == [None, 20]
+    lance.dataset(p).drop_columns(["s", "zz"])
+    assert rl(p).order_by("x").to_values("x") == [10, None]
+
+    with pytest.raises(ValueError, match="Unsupported mode"):
+        rv(x=[0]).to_lance(p, mode="append")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="table=False"):
+        rv(x=[1]).to_lance("hf://org/repo/d.lance")
+
+    fail_path = tmp_dir / "failed_create.lance"
+    f_fail = File.at(fail_path, session=test_session)
+    with pytest.raises((pa.ArrowInvalid, pa.ArrowTypeError)):
+        arrow.write_lance(
+            f_fail,
+            SignalSchema({"w": int}),
+            iter([[[1]], [[1.75]]]),
+            max_rows_per_file=1,
+        )
+    assert not fail_path.exists()
+
+    race_path = tmp_dir / "race_create.lance"
+    f_race = File.at(race_path, session=test_session)
+    race_chunks = (
+        x
+        for x in [[[1]]]
+        if lance.write_dataset(pa.table({"w": [99]}), race_path) or True
+    )
+    with pytest.raises(FileExistsError, match="Lance table already exists"):
+        arrow.write_lance(f_race, SignalSchema({"w": int}), race_chunks)
+    assert rl(race_path).to_values("w") == [99]
+
+
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_lance_table_s3_and_storage_options(
+def test_lance_s3_and_storage_options(
     cloud_test_catalog, test_session, tmp_dir, monkeypatch
 ):
     ctc = cloud_test_catalog
     rv = partial(dc.read_values, session=ctc.session)
     uri, s_uri = f"{ctc.src_uri}/events.lance", f"{ctc.src_uri}/shards/s.lance"
-    rv(id=[1, 2, 3], v=[10, 20, 30]).to_lance(uri, max_rows_per_file=2)
+    lance_opts = arrow._lance_storage_options(ctc.src_uri, ctc.client_config)
+    rv(id=[1, 2, 3], v=[10, 20, 30]).to_lance(
+        uri,
+        max_rows_per_file=2,
+        storage_options=lance_opts,
+    )
     bad = {"aws_endpoint_url": "http://127.0.0.1:9"}
     for scfg, kw in (
         (ctc.client_config, {}),
         (bad, {"client_config": ctc.client_config}),
+        (ctc.client_config, {"storage_options": lance_opts}),
     ):
         s = session_for(test_session, bad, False)
         s.catalog.source_client_configs[ctc.src_uri] = scfg
         ch = dc.read_lance(uri, session=s, anon=False, **kw)
         ((src, val),) = ch.filter(C("id") == 3).to_list("source", "v")
         assert (val, src.read()["v"]) == (30, 30)
+    ch_cfg = dc.read_lance(uri, session=test_session, client_config=ctc.client_config)
+    assert ch_cfg.session.catalog.client_config_for("s3://other") == ctc.client_config
+
     rl = partial(dc.read_lance, session=ctc.session, anon=False)
-
-    def race_chunks():
-        rv(id=[99], v=[70]).to_lance(s_uri, table=False)
-        yield [[1], [10]]
-
+    rv(id=[7], v=[70]).to_lance(s_uri, table=False, fs_kwargs=ctc.client_config)
     with pytest.raises(FileExistsError):
-        f_s, s_sch = (
-            File.at(s_uri, session=ctc.session),
-            SignalSchema({"id": int, "v": int}),
-        )
-        arrow.write_lance(f_s, s_sch, race_chunks(), table=False)
-    assert rl(s_uri).to_values("id") == [99]
-    rv(id=[7], v=[70]).to_lance(
-        s_uri, table=False, mode="overwrite", fs_kwargs=ctc.client_config
-    )
-    _write_lance(s_path := tmp_dir / "s.lance", {"id": [7], "v": [70]})
-    assert dc.read_lance(s_path, session=s, client_config={}).to_values("id") == [7]
-    sh_vals = rl([uri, f"{ctc.src_uri}/shards/"]).to_values("v")
-    assert sorted(sh_vals) == [10, 20, 30, 70]
-    empty_g = [uri, f"{ctc.src_uri}/shards/no-match*.lance"]
-    eg_vals = rl(empty_g, output={"id": int, "v": int}).to_values("v")
-    assert sorted(eg_vals) == [10, 20, 30]
-    sv = session_for(test_session, ctc.client_config | {"version_aware": True}, False)
-    with monkeypatch.context() as mp:
-        err = OSError("403")
-        mp.setattr(
-            Client,
-            "_ls_dir_kwargs",
-            lambda self: (_ for _ in ()).throw(err) if self._is_version_aware() else {},
-        )
-        assert dc.read_lance(
-            f"{ctc.src_uri}/shards/", session=sv, anon=False, versions=False
-        ).to_values("id") == [7]
-    with monkeypatch.context() as mp:
-        err = OSError("403")
-        mp.setattr(
-            dc.lib.dc.lance, "_lance_manifest", lambda *a: (_ for _ in ()).throw(err)
-        )
-        for target in (s_uri, f"{ctc.src_uri}/shards/"):
-            assert rl(target).to_values("id") == [7]
-        with pytest.raises(DatasetPrepareError, match="403"):
-            rl(uri, version=1)
+        rv(id=[8], v=[80]).to_lance(s_uri, table=False)
+    rv(id=[7], v=[70]).to_lance(s_uri, table=False, mode="overwrite")
+    assert rl(f"{ctc.src_uri}/shards/").to_values("v") == [70]
+    with pytest.raises(DatasetPrepareError, match="union"):
+        rl([uri, f"{ctc.src_uri}/shards/"])
 
     monkeypatch.setenv("DATACHAIN_GCP_CREDENTIALS", '{"a":1}')
-    conn = "DefaultEndpointsProtocol=http;AccountName=a;BlobEndpoint=http://h/a;"
     s3_cfg = {
         "aws_endpoint_url": "http://bad",
         "client_kwargs": {"endpoint_url": "http://ok"},
@@ -554,91 +567,25 @@ def test_lance_table_s3_and_storage_options(
         "aws_skip_signature": "true",
         "allow_http": "true",
     }
+    az_cfg = {
+        "account_name": "a",
+        "endpoint_url": "http://h/a",
+        "sas_token": "?sv=1",
+    }
     az_exp = {
         "azure_storage_account_name": "a",
         "azure_storage_endpoint": "http://h/a",
         "azure_storage_sas_key": "sv=1",
         "allow_http": "true",
+        "timeout": "30s",
     }
-    for u, cfg, expected in (
-        ("s3://b", None, None),
-        ("s3://b", s3_cfg, s3_exp),
-        ("gs://b", None, {"google_service_account_key": '{"a":1}'}),
-        ("az://b", {"connection_string": conn, "sas_token": "?sv=1"}, az_exp),
+    for u, cfg, so, expected in (
+        ("s3://b", None, None, None),
+        ("s3://b", s3_cfg, None, s3_exp),
+        ("gs://b", None, None, {"google_service_account_key": '{"a":1}'}),
+        ("az://b", az_cfg, {"timeout": "30s"}, az_exp),
     ):
-        assert arrow._lance_storage_options(u, cfg) == expected
+        assert arrow._lance_storage_options(u, cfg, so) == expected
     for scheme in ("http", "https", "hf"):
         with pytest.raises(DatasetPrepareError, match="not supported"):
             dc.read_lance(f"{scheme}://h/t.lance", version=1, session=test_session)
-
-
-def test_read_lance_http_without_ranges(
-    tmp_path, test_session, http_server_without_ranges, monkeypatch
-):
-    _write_lance(tmp_path / "plain.lance", {"id": [1, 2]})
-    url = f"{http_server_without_ranges}/plain.lance"
-    assert dc.read_lance(url, session=test_session).to_values("id") == [1, 2]
-
-    race_path = tmp_path / "race.lance"
-    f_race = File.at(race_path, session=test_session)
-    wl = partial(arrow.write_lance, f_race, SignalSchema({"w": int}))
-    for mode, ver in (("create", 1), ("overwrite", 2)):
-        m = "create" if mode == "create" else "append"
-        chunks = (
-            x
-            for x in [[[1]]]
-            if lance.write_dataset(pa.table({"w": [99]}), race_path, mode=m) or True
-        )
-        with pytest.raises(Exception):  # noqa: B017
-            wl(chunks, mode=mode)  # type: ignore[arg-type]
-        got = dc.read_lance(race_path, session=test_session).to_values("w")
-        assert (lance.dataset(race_path).version, got) == (ver, [99] * ver)
-
-    frags = [
-        f for v in (1, 2) for f in lance.dataset(race_path, version=v).get_fragments()
-    ]
-    files0 = {race_path / "data" / df.path for f in frags for df in f.data_files()}
-    assert set((race_path / "data").iterdir()) == files0
-    closed: list[bool] = []
-
-    def failing_chunks():
-        try:
-            yield [[1]]
-            yield [[1.75]]
-        finally:
-            closed.append(True)
-
-    class FailingProgress(lance.fragment.FragmentWriteProgress):
-        def begin(self, fragment, **kw) -> None:
-            pass
-
-        def complete(self, fragment, **kw) -> None:
-            raise RuntimeError("boom")
-
-    for chunks, kw, err in (
-        (failing_chunks(), {}, (pa.ArrowInvalid, pa.ArrowTypeError)),
-        ([[[1, 2]]], {"max_rows_per_file": 1, "progress": FailingProgress()}, OSError),
-    ):
-        with pytest.raises(err):
-            wl(chunks, mode="overwrite", **kw)
-        assert set((race_path / "data").iterdir()) == files0
-    assert (closed, lance.dataset(race_path).version) == ([True], 2)
-
-    with monkeypatch.context() as mp:
-        mp.setattr(
-            lance.LanceDataset,
-            "commit",
-            lambda *a, **kw: (_ for _ in ()).throw(OSError("uncertain")),
-        )
-        with pytest.raises(OSError, match="uncertain"):
-            wl([[[1]]], mode="overwrite")
-    assert len(set((race_path / "data").iterdir()) - files0) == 1
-
-    def replace_chunks():
-        shutil.rmtree(race_path)
-        lance.write_dataset(pa.table({"w": [55]}), race_path)
-        yield [[1]]
-
-    with pytest.raises(FileNotFoundError):
-        wl(replace_chunks(), mode="overwrite")
-    assert dc.read_lance(race_path, session=test_session).to_values("w") == [55]

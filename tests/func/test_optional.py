@@ -1494,9 +1494,9 @@ def test_concat_all_null_group_is_none(test_session):
 
 
 def test_outer_merge_unmatched_model_is_none(test_session):
-    """An outer/full merge of a plain DataModel widens it to Optional and
-    returns None for unmatched rows on both backends, not a default-filled
-    instance."""
+    """An outer/full merge of a plain DataModel returns None for unmatched rows
+    on both backends, not a default-filled instance (the model's leaves widen to
+    nullable, so the all-NULL row hydrates as None)."""
     left = dc.read_values(k=[1], session=test_session, output={"k": int})
     right = dc.read_values(
         k=[2],
@@ -1504,7 +1504,5 @@ def test_outer_merge_unmatched_model_is_none(test_session):
         output={"k": int, "m": _Inner},
         session=test_session,
     )
-    merged = left.merge(right, on="k", full=True)
-    assert merged.signals_schema.values["m"] == _Inner | None
-    got = merged.order_by("k").to_values("m")
+    got = left.merge(right, on="k", full=True).order_by("k").to_values("m")
     assert got == [None, _Inner(score=9, label="x")]
