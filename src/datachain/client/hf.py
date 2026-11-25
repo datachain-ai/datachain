@@ -106,16 +106,25 @@ class HfClient(Client):
     ) -> None:
         loop = asyncio.get_running_loop()
         stop = threading.Event()
+        pending_put: Any = None
         with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
 
             def emit(page: list[FileRow]) -> None:
+                nonlocal pending_put
+                if stop.is_set():
+                    return
                 pbar.update(len(page))
-                asyncio.run_coroutine_threadsafe(result_queue.put(page), loop).result()
+                pending_put = asyncio.run_coroutine_threadsafe(
+                    result_queue.put(page), loop
+                )
+                pending_put.result()
 
             try:
                 await asyncio.to_thread(self._list, start_prefix, emit, stop)
             finally:
                 stop.set()
+                if pending_put is not None:
+                    pending_put.cancel()
 
     def _list(
         self,
@@ -128,49 +137,48 @@ class HfClient(Client):
         fs = self.fs.sync_fs
         resolved = fs.resolve_path(path)
         repository = bool(getattr(resolved, "repo_id", None))
-        if repository:
+        if repository and "@" in path and not getattr(resolved, "_raw_revision", None):
             resolved = fs.resolve_path(path, revision=resolved.revision)
         path = resolved.unresolve()
         under = f"{path}/"
         base = f"{prefix}/" if prefix else ""
         expand = {"expand_info": True} if repository else {}
         found = fs.find(path, detail=True, **expand)
-        if not found:
-            fs.info(path, **expand)
-            return
         page: list[FileRow] = []
+        matched = False
         for name, info in found.items():
             if stop is not None and stop.is_set():
                 return
             if name == path:
                 info = fs.info(name, **expand)
                 relative = prefix
-            else:
+            elif name.startswith(under):
                 relative = base + name[len(under) :]
-            commit = info.get("last_commit")
-            if repository and commit is None:
-                raise RuntimeError(
-                    "huggingface_hub returned file metadata without last_commit"
-                )
-            last_modified = (
-                commit.date if commit else info.get("mtime") or info.get("uploaded_at")
+            else:
+                continue
+            matched = True
+            size, etag, version, last_modified = self._entry_metadata(
+                info, repository=repository
             )
             metadata = {
-                **({"version": commit.oid} if commit else {}),
+                **({"version": version} if version else {}),
                 **({"last_modified": last_modified} if last_modified else {}),
             }
             page.append(
                 FileRow(
                     self.uri,
                     relative,
-                    info.get("size") or 0,
-                    etag=info.get("blob_id") or info.get("xet_hash") or "",
+                    size,
+                    etag=etag,
                     **metadata,
                 )
             )
             if len(page) >= self.LIST_PAGE_SIZE:
                 emit(page)
                 page = []
+        if not matched:
+            fs.info(path)
+            return
         if page:
             emit(page)
 
@@ -205,22 +213,36 @@ class HfClient(Client):
             )
         )
 
-    def info_to_file(self, v: dict[str, Any], path: str) -> File:
-        last_commit = v.get("last_commit")
-        if last_commit is None and not self._is_bucket(v):
+    def _entry_metadata(
+        self, info: dict[str, Any], *, repository: bool | None = None
+    ) -> tuple[int, str, str, Any]:
+        last_commit = info.get("last_commit")
+        is_repo = not self._is_bucket(info) if repository is None else repository
+        if is_repo and last_commit is None:
             raise RuntimeError(
                 "huggingface_hub returned file metadata without last_commit; "
                 "expected expanded HF metadata for file version tracking"
             )
         last_modified = (
-            last_commit.date if last_commit else v.get("mtime") or v.get("uploaded_at")
+            last_commit.date
+            if last_commit
+            else info.get("mtime") or info.get("uploaded_at")
         )
+        return (
+            info.get("size") or 0,
+            info.get("blob_id") or info.get("xet_hash") or "",
+            last_commit.oid if last_commit else "",
+            last_modified,
+        )
+
+    def info_to_file(self, v: dict[str, Any], path: str) -> File:
+        size, etag, version, last_modified = self._entry_metadata(v)
         return File(
             source=self.uri,
             path=path,
-            size=v.get("size") or 0,
-            etag=v.get("blob_id") or v.get("xet_hash") or "",
-            version=last_commit.oid if last_commit else "",
+            size=size,
+            etag=etag,
+            version=version,
             **({"last_modified": last_modified} if last_modified else {}),
         )
 
