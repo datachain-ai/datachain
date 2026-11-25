@@ -106,7 +106,7 @@ zarr = [
   "zarr>=3.0.0"
 ]
 lance = [
-  "pylance>=1.0.0"
+  "pylance>=14.0.0"
 ]
 tests = [
   "datachain[torch,audio,remote,vector,hf,video,postgres,zarr,lance]",

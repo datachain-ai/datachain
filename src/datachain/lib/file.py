@@ -2219,13 +2219,18 @@ class ArrowRow(DataModel):
         from pyarrow.dataset import CsvFileFormat
 
         from datachain.lib.arrow import (
-            _clear_lance_tmp_caches,
             _file_dataset,
+            _LanceTableDataset,
+            _open_lance_dataset,
             fix_pyarrow_format,
         )
         from datachain.utils import safe_closing
 
         kwargs = dict(self.kwargs)
+        if tbl := kwargs.pop("lance_table", None):
+            ds: Any = _LanceTableDataset(_open_lance_dataset(self.file, tbl))
+            yield next(ds.take([self.index]).to_reader())
+            return
         if csv := kwargs.pop("csv", None):
             parse = ParseOptions(**csv["parse_options"])
             if csv.get("skip_invalid_rows"):
@@ -2240,12 +2245,8 @@ class ArrowRow(DataModel):
 
         if self.file._caching_enabled:
             self.file.ensure_cached()
-        try:
-            with safe_closing(_file_dataset(self.file, kwargs)) as ds:
-                yield next(ds.take([self.index]).to_reader())
-        finally:
-            if not self.file._caching_enabled:
-                _clear_lance_tmp_caches()
+        with safe_closing(_file_dataset(self.file, kwargs)) as ds:
+            yield next(ds.take([self.index]).to_reader())
 
     def read(self):
         """Returns row contents as dict.

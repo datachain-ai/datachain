@@ -38,12 +38,16 @@ class GCSClient(RangeListedClient):
         "items(name,size,generation,etag,timeDeleted,updated),nextPageToken,prefixes"
     )
 
-    @classmethod
-    def create_fs(cls, **kwargs) -> GCSFileSystem:
-        if os.environ.get("DATACHAIN_GCP_CREDENTIALS"):
-            kwargs["token"] = json.loads(os.environ["DATACHAIN_GCP_CREDENTIALS"])
+    @staticmethod
+    def _normalize_gcs_kwargs(kwargs: dict[str, Any]) -> None:
+        if creds := os.environ.get("DATACHAIN_GCP_CREDENTIALS"):
+            kwargs["token"] = json.loads(creds)
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
+
+    @classmethod
+    def create_fs(cls, **kwargs) -> GCSFileSystem:
+        cls._normalize_gcs_kwargs(kwargs)
         # Read gzip-encoded objects without decompressing them, so the bytes match
         # File.size and range reads work. GCS decompresses unless the request accepts
         # gzip, and aiohttp decompresses unless told not to.

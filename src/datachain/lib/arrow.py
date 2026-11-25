@@ -1,16 +1,20 @@
 import asyncio
-import atexit
 import copy
 import hashlib
+import io
+import itertools
 import os
+import struct
 import sys
-import tempfile
 import threading
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import datetime
 from functools import partial
-from typing import TYPE_CHECKING, Any, TypeGuard
+from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard
+from urllib.parse import urlsplit
 
 import numpy as np
 import pyarrow as pa
@@ -22,7 +26,6 @@ from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.cache import Cache, get_temp_cache
-from datachain.catalog import catalog as _catalog
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib import parquet_ranges
@@ -179,17 +182,16 @@ _LANCE_TABLE_DIRS = frozenset(
 )
 
 
-def _is_lance_table_file(file: File, client: "Client") -> bool:
+def _is_lance_table_file(file: File, client: "Client | None" = None) -> bool:
     fs_path = file.get_fs_path().replace("\\", "/").rstrip("/")
-    parts = fs_path.split("/")
-    stop = 2 if "://" in fs_path else -1
+    parts, stop = fs_path.split("/"), (2 if "://" in fs_path else 0)
     for i in range(len(parts) - 2, stop, -1):
         if parts[i] in _LANCE_TABLE_DIRS:
-            if i > stop + 1 and parts[i - 1].endswith(".lance"):
-                return True
-            prefix = f"{'/'.join(parts[:i])}/"
-            if client.fs.isdir(f"{prefix}_versions") and (
-                parts[i] == "data" or client.fs.isdir(f"{prefix}data")
+            p = f"{'/'.join(parts[:i])}/"
+            if (i > stop + 1 and parts[i - 1].endswith(".lance")) or (
+                client is not None
+                and client.fs.isdir(f"{p}_versions")
+                and (parts[i] == "data" or client.fs.isdir(f"{p}data"))
             ):
                 return True
     return False
@@ -197,86 +199,297 @@ def _is_lance_table_file(file: File, client: "Client") -> bool:
 
 def _find_lance_blob(fields: Sequence[pa.Field], prefix: str = "") -> str | None:
     for f in fields:
-        name = (
-            prefix.rstrip(".") if f.name == "item" and prefix else f"{prefix}{f.name}"
-        )
-        if (f.metadata or {}).get(b"lance-encoding:blob") == b"true":
-            return name
+        n = prefix.rstrip(".") if f.name == "item" and prefix else f"{prefix}{f.name}"
+        if (f.metadata or {}).get(b"lance-encoding:blob") == b"true" or getattr(
+            f.type, "extension_name", ""
+        ).startswith("lance.blob"):
+            return n
         children = [f.type.field(i) for i in range(f.type.num_fields)]
-        if blob := _find_lance_blob(children, f"{name}."):
+        if blob := _find_lance_blob(children, f"{n}."):
             return blob
     return None
 
 
-def _lance_file_reader():
+def _require_lance():
     try:
-        from lance.file import LanceFileReader
+        import lance
+        import lance.file
     except ImportError as exc:
         raise ImportError(
             f"Missing dependency for Lance files: {exc}\n"
-            "To install run:\n\n"
-            "  pip install 'datachain[lance]'\n"
+            "To install run:\n\n  pip install 'datachain[lance]'\n"
         ) from exc
-    return LanceFileReader
+    return lance
 
 
-_lance_tmp_lock = threading.Lock()
-_lance_tmp_caches: dict[str, Cache] = {}
+def _lance_file_reader():
+    return _require_lance().file.LanceFileReader
 
 
-def _clear_lance_tmp_caches() -> None:
-    with _lance_tmp_lock:
-        caches = list(_lance_tmp_caches.values())
-        _lance_tmp_caches.clear()
-    for tmp_cache in caches:
-        tmp_cache.destroy()
+_LANCE_PREFIX = {"s3": "aws_", "gs": "google_", "az": "azure_storage_"}
+_AZ_KEYS = ("account_name", "account_key", "client_id", "client_secret", "tenant_id")
+_LANCE_ALIASES = {
+    "s3": {
+        "key": "aws_access_key_id",
+        "secret": "aws_secret_access_key",
+        "token": "aws_session_token",
+        "endpoint_url": "aws_endpoint",
+        "region": "aws_region",
+        "region_name": "aws_region",
+        "profile": "profile",
+    },
+    "gs": {"endpoint_url": "google_base_url"},
+    "az": {
+        **{k: f"azure_storage_{k}" for k in _AZ_KEYS},
+        "sas_token": "azure_storage_sas_key",
+        "azure_storage_sas_token": "azure_storage_sas_key",
+        "account_url": "azure_storage_endpoint",
+        "endpoint_url": "azure_storage_endpoint",
+        "AccountName": "azure_storage_account_name",
+        "AccountKey": "azure_storage_account_key",
+        "BlobEndpoint": "azure_storage_endpoint",
+        "SharedAccessSignature": "azure_storage_sas_key",
+    },
+}
+_GS_TOKENS = {"cloud", "google_default", "cache", "browser"}
 
 
-atexit.register(_clear_lance_tmp_caches)
+def _lance_storage_options(
+    uri: str, config: dict[str, Any] | None
+) -> dict[str, str] | None:
+    scheme = urlsplit(uri).scheme.lower()
+    scheme = "gs" if scheme == "gcs" else scheme
+    if scheme in ("http", "https", "hf"):
+        raise ValueError(
+            f"Lance tables are not supported for '{scheme}://' URIs; "
+            "use table=False to write a single .lance file"
+        )
+    if scheme not in _LANCE_ALIASES:
+        return None
+    src, opts = dict(config or {}), {}
+    if scheme == "s3":
+        from datachain.client.s3 import ClientS3
+
+        ClientS3._normalize_s3_kwargs(src)
+        src |= (src.get("config_kwargs") or {}) | (src.get("client_kwargs") or {})
+    elif scheme == "gs":
+        from datachain.client.gcs import GCSClient
+
+        GCSClient._normalize_gcs_kwargs(src)
+        token = src.get("token")
+        if token == "anon":  # noqa: S105
+            opts["google_skip_signature"] = "true"
+        elif isinstance(token, dict):
+            opts["google_service_account_key"] = json.dumps(token)
+        elif isinstance(token, str) and token not in _GS_TOKENS:
+            sfx = "_key" if token.lstrip().startswith("{") else ""
+            opts[f"google_service_account{sfx}"] = token
+    elif conn := src.get("connection_string"):
+        src = dict(p.split("=", 1) for p in str(conn).split(";") if "=" in p) | src
+        if src.get("DefaultEndpointsProtocol") == "http":
+            opts["allow_http"] = "true"
+    prefix, aliases = _LANCE_PREFIX[scheme], _LANCE_ALIASES[scheme]
+    opts |= {
+        k: str(v) for k, v in src.items() if k.startswith(prefix) and v is not None
+    }
+    opts |= {d: str(src[k]) for k, d in aliases.items() if src.get(k) is not None}
+    opts.pop("azure_storage_sas_token", None)
+    if sas := opts.get("azure_storage_sas_key"):
+        opts["azure_storage_sas_key"] = sas.lstrip("?")
+    if src.get("anon"):
+        opts[f"{prefix.removesuffix('storage_')}skip_signature"] = "true"
+    if (
+        (ah := src.get("allow_http")) is not None
+        or src.get("use_ssl") is False
+        or any(v.startswith("http://") for v in opts.values())
+    ):
+        opts["allow_http"] = "false" if ah is False else "true"
+    return opts or None
 
 
-def _local_lance_path(file: File) -> str:
-    catalog = file._catalog
-    assert catalog is not None
-    client = catalog.get_client(file.source)
+def _lance_manifest(
+    tbl: File, version: int | str | None, client: "Client"
+) -> tuple[int, File] | None:
+    path = f"{client.name}/{tbl.path.strip('/')}/_versions"
+    client.fs.invalidate_cache(path)
+    manifests: dict[int, tuple[bool, File]] = {}
+    with suppress(FileNotFoundError, NotADirectoryError):
+        for info in client.fs.ls(path, detail=True):
+            s = (f := client.info_to_file(info, client.rel_path(info["name"]))).name
+            det = s.startswith("d")
+            num = s[det:].removesuffix(".manifest")
+            if info.get("type") != "directory" and num != s[det:] and num.isdigit():
+                n = int(num)
+                ver = n if det else ((1 << 64) - 1 - n if n >> 63 else n)
+                manifests[ver] = (det, f)
+    regular = [v for v, (det, _) in manifests.items() if not det]
+    if not manifests or (version is None and not regular):
+        return None
+    if version is None:
+        ver = max(regular)
+    elif isinstance(version, int) and not isinstance(version, bool):
+        ver = version
+    else:
+        tag = f"{tbl.path}/_refs/tags/{version}.json".lstrip("/")
+        ref = json.loads(client.fs.cat_file(client.get_uri(tag)))
+        if ref.get("branch"):
+            raise ValueError(f"Lance branch tag '{version}' is not supported")
+        ver = int(ref["version"])
+    if ver not in manifests:
+        raise ValueError(f"Version {version} was not found")
+    return ver, manifests[ver][1]
+
+
+def _check_manifest(client: "Client", manifest: File) -> None:
+    client.fs.invalidate_cache(manifest.get_fs_path())
+    client.check_unchanged(manifest)
+
+
+def _open_lance_dataset(file: File, table: dict[str, Any]) -> Any:
+    if (catalog := file._catalog) is None:
+        raise ValueError("Cannot open Lance table without a catalog")
+    lance, src = _require_lance(), table.get("source") or file.source
+    cfg = catalog.client_config_for(src)
+    client = catalog.get_client(src, client_config=cfg)
+    m = File(source=src, path=table["manifest"][0], etag=table["manifest"][1])
+    _check_manifest(client, m)
+    opts = _lance_storage_options(src, cfg)
+    fs_path = File(source=src, path=table["path"]).get_fs_path()
+    ds = lance.dataset(fs_path, version=int(table["version"]), storage_options=opts)
+    _check_manifest(client, m)
+    for col in ds.schema.names:
+        if not col or "`" in col:
+            raise ValueError(f"Lance table column {col!r} is not supported")
+    return ds
+
+
+_LANCE_TAIL_BYTES = 64 * 1024
+
+
+def _lance_metadata_copy(file: File, client: "Client", tmp: list[Cache]) -> str | None:
+    """A sparse copy holding only what a Lance v2 reader needs for the schema: the
+    schema buffer and everything from the column metadata to the end."""
+    try:
+        with client.open_object(
+            file, use_cache=False, cb=file._download_cb, block_size=0
+        ) as f:
+            size = f.seek(0, io.SEEK_END)
+            lo = max(0, size - _LANCE_TAIL_BYTES)
+            f.seek(lo)
+            tail = f.read(size - lo)  # a sized read stays a range read on HF
+
+            def read(pos: int, end: int) -> bytes:
+                if pos >= lo:
+                    return tail[pos - lo : end - lo]
+                f.seek(pos)
+                return f.read(end - pos)
+
+            if size < 40 or len(tail) != size - lo or tail[-4:] != b"LANC":
+                return None
+            # Footer: column metadata start, _, global buffer table, buffer count.
+            meta, _, table, n = struct.unpack_from("<QQQI", tail, len(tail) - 40)
+            pos, length = struct.unpack("<QQ", read(table, table + 16))
+            if not (n and meta < size and pos + length <= size):
+                return None
+            parts = {meta: read(meta, size), pos: read(pos, pos + length)}
+    except (ValueError, struct.error):  # no range reads or not a Lance v2 file
+        return None
+    tmp.append(get_temp_cache(client.cache.tmp_dir, prefix="lance-"))
+    path = os.path.join(tmp[-1].cache_dir, "metadata.lance")
+    with open(path, "wb") as out:
+        out.truncate(size)
+        for start, data in parts.items():
+            out.seek(start)
+            out.write(data)
+    return path
+
+
+def _local_lance_path(file: File, tmp: list[Cache], metadata_only: bool) -> str:
+    assert file._catalog is not None
+    client = file._catalog.get_client(file.source)
     if _is_lance_table_file(file, client):
         raise ValueError(
             f"'{file.path}' is inside a Lance table directory; "
             "read_lance reads standalone .lance data files"
         )
-    if (path := file.get_local_path()) is not None:
+    if path := file.get_local_path():
         return path
     if isinstance(client.fs, LocalFileSystem):
         client.check_unchanged(file)
         return file.get_fs_path()
-    cache = catalog.cache
     if not file._caching_enabled:
-        with _lance_tmp_lock:
-            tmp_cache = _lance_tmp_caches.get(cache.tmp_dir)
-            if tmp_cache is None or not os.path.isdir(tmp_cache.cache_dir):
-                tmp_cache = get_temp_cache(
-                    cache.tmp_dir, prefix="lance-", fallback=cache.as_readonly()
-                )
-                _lance_tmp_caches[cache.tmp_dir] = tmp_cache
-        if (path := tmp_cache.get_path(file)) is not None:
+        if metadata_only and (path := _lance_metadata_copy(file, client, tmp)):
             return path
-        file = file.model_copy()
-        file._catalog = _catalog.clone_catalog_with_cache(catalog, tmp_cache)
+        tmp.append(get_temp_cache(client.cache.tmp_dir, prefix="lance-"))
+        client.cache = tmp[-1]
+        client.download(file, callback=file._download_cb)
+        return tmp[-1].get_path(file)  # type: ignore[return-value]
     file.ensure_cached()
-    path = file.get_local_path()
-    assert path is not None
-    return path
+    return file.get_local_path()  # type: ignore[return-value]
 
 
 _LANCE_JSON_META = {b"datachain:json": b"true"}
 
 
 def _encode_lance_col(name: str) -> str:
-    return name.replace("%", "%25").replace(".", "%2E")
+    return name.replace("%", "%25").replace(".", "%2E").replace("`", "%60")
 
 
 def _decode_lance_col(name: str) -> str:
-    return name.replace("%2E", ".").replace("%25", "%")
+    return name.replace("%60", "`").replace("%2E", ".").replace("%25", "%")
+
+
+def _decode_lance_schema(schema: pa.Schema, dc_read: bool = False) -> pa.Schema:
+    if (blob := _find_lance_blob(list(schema))) is not None:
+        raise ValueError(f"Lance blob column '{blob}' is not supported")
+    if not (dc_read or _written_by_datachain(schema)):
+        return schema
+    return pa.schema(
+        [
+            pa.field(
+                _decode_lance_col(f.name),
+                pa.json_()
+                if (f.metadata or {}).get(b"datachain:json") == b"true"
+                else f.type,
+            )
+            for f in schema
+        ],
+        metadata=schema.metadata,
+    )
+
+
+def _write_lance_file(
+    client: Any, dst: str, mode: str, s: pa.Schema, batches: Any, meta: Any, **kw: Any
+) -> None:
+    fs, local = client.fs, isinstance(client.fs, LocalFileSystem)
+    if mode == "create" and fs.exists(dst):
+        raise FileExistsError(f"File already exists: {dst}")
+    staging = os.path.dirname(os.path.abspath(dst)) if local else client.cache.tmp_dir
+    os.makedirs(staging, exist_ok=True)
+    with TemporaryDirectory(dir=staging) as tmp_dir:
+        staged = os.path.join(tmp_dir, "data.lance")
+        with _require_lance().file.LanceFileWriter(staged, s, **kw) as w:
+            for b in batches:
+                w.write_batch(b)
+            w.add_schema_metadata(
+                DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY.decode("utf-8"), meta()
+            )
+        if local:
+            (os.link if mode == "create" else os.replace)(staged, dst)
+            return
+        try:
+            fs.put_file(staged, dst, mode=mode)
+        except Exception as exc:
+            r = getattr(getattr(exc, "__cause__", None), "response", None) or {}
+            code = r.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if mode == "create" and (
+                isinstance(exc, FileExistsError)
+                or getattr(exc, "code", None) == 412
+                or code in (409, 412)
+                or "PreconditionFailed" in str(exc)
+            ):
+                raise FileExistsError(f"File already exists: {dst}") from exc
+            raise
 
 
 def write_lance(
@@ -284,72 +497,192 @@ def write_lance(
     signal_schema: SignalSchema,
     column_chunks: Iterable[Sequence[list[Any]]],
     *,
+    mode: Literal["create", "overwrite"] = "create",
+    table: bool = True,
     fs_kwargs: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> None:
-    _lance_file_reader()
-    from lance.file import LanceFileWriter
+    with safe_closing(column_chunks):
+        if mode not in ("create", "overwrite"):
+            raise ValueError(f"Unsupported mode {mode!r}")
+        lance, s = _require_lance(), export_schema(signal_schema)
+        catalog, dst_path = target._catalog, target.get_fs_path()
+        assert catalog is not None
+        cfg = catalog.client_config_for(target.source) | (fs_kwargs or {})
+        client = catalog.get_client(target.source, client_config=cfg)
+        raw_schema = pa.schema(
+            [
+                pa.field(
+                    _encode_lance_col(f.name), pa.string(), metadata=_LANCE_JSON_META
+                )
+                if isinstance(f.type, pa.JsonType)
+                else f.with_name(_encode_lance_col(f.name))
+                for f in s
+            ]
+        )
+        null_free = {
+            *s.names,
+            *(k for k, v in signal_schema.values.items() if ModelStore.is_pydantic(v)),
+        }
 
-    schema = export_schema(signal_schema)
-    lance_schema = pa.schema(
-        [
-            pa.field(_encode_lance_col(f.name), pa.string(), metadata=_LANCE_JSON_META)
-            if isinstance(f.type, pa.JsonType)
-            else f.with_name(_encode_lance_col(f.name))
-            for f in schema
-        ]
-    )
-    catalog = target._catalog
-    assert catalog is not None
-    client = catalog.get_client(target.source)
-    fs = (
-        client.create_fs(**{**catalog.client_config, **fs_kwargs})
-        if fs_kwargs
-        else client.fs
-    )
-    dst_path = target.get_fs_path()
-    local = isinstance(fs, LocalFileSystem)
-    if local:
-        staging = os.path.dirname(os.path.abspath(dst_path))
-        os.makedirs(staging, exist_ok=True)
-    else:
-        staging = catalog.cache.tmp_dir
-    null_free = {
-        *schema.names,
-        *(k for k, v in signal_schema.values.items() if ModelStore.is_pydantic(v)),
-    }
-    with tempfile.TemporaryDirectory(dir=staging) as tmp_dir:
-        staged = os.path.join(tmp_dir, "data.lance")
-        with LanceFileWriter(staged, lance_schema, **kwargs) as writer:
+        def _batch(chunk: Sequence[list[Any]]) -> pa.Table:
+            cols = [_to_arrow(v, f.type) for v, f in zip(chunk, s, strict=True)]
+            null_free.difference_update(
+                f.name for f, a in zip(s, cols, strict=True) if a.null_count
+            )
+            return pa.Table.from_arrays(
+                [getattr(a, "storage", a) for a in cols], schema=raw_schema
+            )
+
+        def _meta() -> str:
+            values = _optional_unless_null_free(signal_schema.values, null_free)
+            return json.dumps(SignalSchema(values).serialize(), ensure_ascii=False)
+
+        if not table:
+            _write_lance_file(
+                client,
+                dst_path,
+                mode,
+                raw_schema,
+                map(_batch, column_chunks),
+                _meta,
+                **kwargs,
+            )
+            return
+
+        opts = _lance_storage_options(target.source, cfg)
+        orig = _lance_manifest(target, None, client)
+        if mode == "create" and orig is not None:
+            raise FileExistsError(f"Dataset already exists: {dst_path}")
+        user_progress = kwargs.pop("progress", None)
+        fragments: list[Any] = []
+        written: list[Any] = []
+
+        class _Progress(lance.fragment.FragmentWriteProgress):  # type: ignore[name-defined, misc]
+            def begin(self, fragment: Any, **kw: Any) -> None:
+                getattr(user_progress, "begin", lambda *a, **k: None)(fragment, **kw)
+
+            def complete(self, fragment: Any, **kw: Any) -> None:
+                written.append(fragment)
+                getattr(user_progress, "complete", lambda *a, **k: None)(fragment, **kw)
+
+        committing = False
+        try:
             for chunk in column_chunks:
-                arrays = [
-                    _to_arrow(values, f.type)
-                    for values, f in zip(chunk, schema, strict=True)
-                ]
-                null_free -= {
-                    f.name
-                    for f, arr in zip(schema, arrays, strict=True)
-                    if arr.null_count
-                }
-                writer.write_batch(
-                    pa.Table.from_arrays(
-                        [getattr(a, "storage", a) for a in arrays], schema=lance_schema
+                fragments.extend(
+                    lance.fragment.write_fragments(
+                        _batch(chunk),
+                        dst_path,
+                        schema=raw_schema,
+                        mode=mode,
+                        progress=_Progress(),
+                        storage_options=opts,
+                        **kwargs,
                     )
                 )
-            values = _optional_unless_null_free(signal_schema.values, null_free)
-            if values != signal_schema.values:
-                signal_schema = SignalSchema(values)
-            writer.add_schema_metadata(
-                DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY.decode("utf-8"),
-                json.dumps(signal_schema.serialize(), ensure_ascii=False),
+            final_schema = raw_schema.with_metadata(
+                {DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY: _meta().encode("utf-8")}
             )
-        if local:
-            os.replace(staged, dst_path)
-        else:
-            fs.put_file(staged, dst_path)
+            if orig is not None:
+                _check_manifest(client, orig[1])
+            committing = True
+            lance.LanceDataset.commit(
+                dst_path,
+                lance.LanceOperation.Overwrite(final_schema, fragments),
+                read_version=orig[0] if orig else 0,
+                max_retries=0,
+                storage_options=opts,
+                enable_stable_row_ids=kwargs.get("enable_stable_row_ids"),
+            )
+        except BaseException as exc:
+            if (
+                not committing
+                or isinstance(exc, lance.commit.CommitConflictError)
+                or "0.manifest" in str(exc)
+            ):
+                for f in (*fragments, *written):
+                    for d in f.files:
+                        with suppress(OSError):
+                            p = f"{target.path}/data/{d.path}".lstrip("/")
+                            client.fs.rm_file(client.get_uri(p))
+            raise
 
 
-class _LanceDataset:
+class _LanceTableDataset:
+    """Adapter reading a Lance table (or one fragment of it) via `lance.dataset`."""
+
+    def __init__(
+        self,
+        ds: Any,
+        schema: pa.Schema | None = None,
+        *,
+        datachain_read: bool = False,
+        fragment: int | None = None,
+    ):
+        self._ds = ds
+        self._frag = ds.get_fragment(int(fragment)) if fragment is not None else None
+        self._dc = datachain_read or _written_by_datachain(ds.schema)
+        self._physical_schema = _decode_lance_schema(ds.schema, self._dc)
+        self.schema = schema or self._physical_schema
+
+    def _raw_name(self, col: str) -> str:
+        return _encode_lance_col(col) if self._dc else col
+
+    def _align(self, raw: Any, columns: Sequence[str], rows: int = 0) -> Any:
+        present = set(self._physical_schema.names)
+        n = raw.num_rows if raw is not None else rows
+        fields = [self.schema.field(c) for c in columns]
+        cls = pa.RecordBatch if isinstance(raw, pa.RecordBatch) else pa.Table
+        arrays = [
+            raw.column(self._raw_name(f.name)).cast(f.type)
+            if raw is not None and f.name in present
+            else pa.nulls(n, f.type)
+            for f in fields
+        ]
+        return cls.from_arrays(
+            arrays, schema=pa.schema(fields, metadata=self.schema.metadata)
+        )
+
+    def scan_batches(
+        self,
+        filter_expr: pc.Expression | None = None,
+        filter_columns: Sequence[str] = (),
+        **kw: Any,
+    ) -> Iterator[tuple[pa.Array, pa.RecordBatch]]:
+        if self._frag is None:
+            return
+        columns = list(kw.get("columns") or self.schema.names)
+        step = kw.get("batch_size") or ArrowGenerator.DEFAULT_BATCH_SIZE
+        present = set(self._physical_schema.names)
+        raw_cols = [self._raw_name(c) for c in columns if c in present]
+        scan = partial(
+            self._frag.scanner, columns=raw_cols, batch_size=step, with_row_id=True
+        )
+        batches: Iterable[pa.RecordBatch] | None = None
+        if filter_expr is not None and set(filter_columns) <= present:
+            with suppress(pa.ArrowException, ValueError):
+                it = iter(scan(filter=filter_expr).to_batches())
+                first = next(it, None)
+                batches = () if first is None else itertools.chain((first,), it)
+        if batches is None:
+            batches = scan().to_batches()
+        with tqdm(desc="Parsed by pyarrow", unit="rows", leave=False) as pbar:
+            for b in batches:
+                pbar.update(b.num_rows)
+                if b.num_rows:
+                    yield b.column("_rowid").cast(pa.int64()), self._align(b, columns)
+
+    def take(self, indices: Sequence[int]) -> pa.Table:
+        try:
+            raw = None if min(indices) < 0 else self._ds._take_rows(list(indices))
+        except OSError as exc:
+            raise IndexError(str(exc)) from exc
+        if raw is None or raw.num_rows != len(indices):
+            raise IndexError("Row index out of range")
+        return self._align(raw, self.schema.names)
+
+
+class _LanceDataset(_LanceTableDataset):
     """Adapter reading a single Lance v2 data file via `LanceFileReader`."""
 
     def __init__(
@@ -358,42 +691,25 @@ class _LanceDataset:
         schema: pa.Schema | None = None,
         *,
         datachain_read: bool = False,
+        metadata_only: bool = False,
     ):
+        self._tmp: list[Cache] = []
         self._readers: dict[tuple[str, ...], Any] = {}
-        reader_cls = _lance_file_reader()
-        self._path = _local_lance_path(file)
-        if not os.path.getsize(self._path):
-            raise ValueError(f"Lance file '{file.path}' is 0 bytes")
-        self._base_reader = reader_cls(self._path)
-        meta = self._base_reader.metadata()
-        if (blob := _find_lance_blob(list(meta.schema))) is not None:
+        self._base_reader: Any = None
+        try:
+            reader_cls = _lance_file_reader()
+            self._path = _local_lance_path(file, self._tmp, metadata_only)
+            if not os.path.getsize(self._path):
+                raise ValueError(f"Lance file '{file.path}' is 0 bytes")
+            self._base_reader = reader_cls(self._path)
+            meta = self._base_reader.metadata()
+            self.num_rows: int = meta.num_rows
+            self._dc = datachain_read or _written_by_datachain(meta.schema)
+            self._physical_schema = _decode_lance_schema(meta.schema, self._dc)
+            self.schema = schema or self._physical_schema
+        except BaseException:
             self.close()
-            raise ValueError(
-                f"Lance blob column '{blob}' in '{file.path}' is not "
-                "supported; read_lance reads standalone .lance data files"
-            )
-        self.num_rows: int = meta.num_rows
-        self._dc = datachain_read or _written_by_datachain(meta.schema)
-        self._physical_schema: pa.Schema = (
-            pa.schema(
-                [
-                    pa.field(
-                        _decode_lance_col(f.name),
-                        pa.json_()
-                        if (f.metadata or {}).get(b"datachain:json") == b"true"
-                        else f.type,
-                    )
-                    for f in meta.schema
-                ],
-                metadata=meta.schema.metadata,
-            )
-            if self._dc
-            else meta.schema
-        )
-        self.schema: pa.Schema = schema or self._physical_schema
-
-    def _raw_name(self, col: str) -> str:
-        return _encode_lance_col(col) if self._dc else col
+            raise
 
     def _reader(self, present: tuple[str, ...]) -> Any:
         # Lance's projection parser rejects empty column names.
@@ -422,17 +738,7 @@ class _LanceDataset:
                 raw = r.take_rows(idx, batch_size=len(idx)).to_table()
             else:
                 raw = r.read_range(start, n, batch_size=n).to_table()
-        rows = n if take is None else len(take)
-        fields = [self.schema.field(c) for c in columns]
-        return pa.Table.from_arrays(
-            [
-                raw.column(self._raw_name(f.name)).cast(f.type)
-                if raw is not None and f.name in present
-                else pa.nulls(rows, f.type)
-                for f in fields
-            ],
-            schema=pa.schema(fields, metadata=self.schema.metadata),
-        )
+        return self._align(raw, columns, n if take is None else len(take))
 
     def chunks(self, step: int):
         for start in range(0, self.num_rows, step):
@@ -489,6 +795,9 @@ class _LanceDataset:
     def close(self) -> None:
         self._readers.clear()
         self._base_reader = None
+        for tmp_cache in self._tmp:
+            tmp_cache.destroy()
+        self._tmp.clear()
 
 
 def read_batches(
@@ -719,12 +1028,14 @@ class ArrowGenerator(Generator):
         ] = {}
         self._parts_bytes = 0
         self._parts_lock = threading.Lock()
+        self._lance_tables: dict[Any, Any] = {}
 
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
         state.pop("_parts_lock", None)
         state["_parts"] = {}
         state["_parts_bytes"] = 0
+        state["_lance_tables"] = {}
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -732,13 +1043,14 @@ class ArrowGenerator(Generator):
         self._parts = {}
         self._parts_bytes = 0
         self._parts_lock = threading.Lock()
+        self._lance_tables = {}
 
     def teardown(self) -> None:
+        self._lance_tables.clear()
         with self._parts_lock:
             for _, reserved, _ in self._parts.values():
                 self._parts_bytes = max(0, self._parts_bytes - reserved)
             self._parts.clear()
-        _clear_lance_tmp_caches()
 
     def hash(self, include_body: bool = True) -> str:
         # The read schema, columns and pushed filter decide what is read, so reads
@@ -803,6 +1115,8 @@ class ArrowGenerator(Generator):
     async def _prefetch_file(
         self, file: File, download_cb: "Callback | None" = None
     ) -> bool:
+        if self.params is not None and "lance_fragment" in self.params.values:
+            return False
         # Let filtering choose the row groups before fetching their payload.
         if self.filter is not None and not file._caching_enabled:
             return False
@@ -881,11 +1195,11 @@ class ArrowGenerator(Generator):
         with self._parts_lock:
             self._parts_bytes = max(0, self._parts_bytes - n)
 
-    def process(self, file: File):
+    def process(self, file: File, lance_fragment: str = ""):
         with self._parts_lock:
             _, reserved, parts = self._parts.pop(id(file), (None, 0, None))
         try:
-            if file._caching_enabled:
+            if file._caching_enabled and not lance_fragment:
                 file.ensure_cached()
             if parts is None and (columns := self._parquet_columns(file)):
                 _, parts, _ = self._read_parquet_parts(file, columns)
@@ -895,6 +1209,20 @@ class ArrowGenerator(Generator):
 
             # With datachain_read, each file is read with its own columns and types.
             in_schema = None if self.datachain_read else self.input_schema
+            if lance_fragment:
+                t = json.loads(lance_fragment)
+                key = (t["source"], t["path"], t["version"], *t["manifest"])
+                if (lds := self._lance_tables.get(key)) is None:
+                    lds = self._lance_tables[key] = _open_lance_dataset(file, t)
+                table_ds = _LanceTableDataset(
+                    lds,
+                    in_schema,
+                    datachain_read=self.datachain_read,
+                    fragment=t.get("fragment"),
+                )
+                yield from self._rows(file, table_ds, t)
+                return
+
             with safe_closing(
                 _file_dataset(
                     file,
@@ -908,7 +1236,12 @@ class ArrowGenerator(Generator):
         finally:
             self._release_parts_bytes(reserved)
 
-    def _rows(self, file: File, ds: Dataset | _LanceDataset):
+    def _rows(
+        self,
+        file: File,
+        ds: Dataset | _LanceTableDataset,
+        table: dict[str, Any] | None = None,
+    ):
         if self.datachain_read:
             _check_type_tags(file, ds.schema)
 
@@ -920,6 +1253,8 @@ class ArrowGenerator(Generator):
             )
 
         source_kwargs = self._source_kwargs() if self.source else None
+        if source_kwargs is not None and table is not None:
+            source_kwargs = {**source_kwargs, "lance_table": table}
         schema = ds.schema
         kw: dict[str, Any] = {
             "batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows or sys.maxsize),
@@ -930,7 +1265,7 @@ class ArrowGenerator(Generator):
             yield from self._column_batches(self._batches(ds, kw), file, source_kwargs)
             return
         if self.datachain_read:
-            for index, obj in enumerate(self._signal_objects(ds, kw)):
+            for index, obj in self._signal_objects(ds, kw):
                 yield self._process_record(obj, file, index, source_kwargs)
             return
         if self.columns is not None:
@@ -953,8 +1288,12 @@ class ArrowGenerator(Generator):
                 yield self._process_record(obj, file, index, source_kwargs)
 
     def _batches(
-        self, ds: Dataset | _LanceDataset, kw: dict[str, Any]
+        self,
+        ds: Dataset | _LanceTableDataset,
+        kw: dict[str, Any],
     ) -> Iterator[tuple[int | pa.Array, pa.RecordBatch]]:
+        if type(ds) is _LanceTableDataset:
+            return ds.scan_batches(self.filter, self.filter_columns, **kw)
         if self.filter is not None:
             if isinstance(ds, _LanceDataset):
                 columns = kw.get("columns") or ds.schema.names
@@ -1040,8 +1379,8 @@ class ArrowGenerator(Generator):
             )
 
     def _signal_objects(
-        self, ds: Dataset | _LanceDataset, kw: dict[str, Any]
-    ) -> Iterator["BaseModel"]:
+        self, ds: Dataset | _LanceTableDataset, kw: dict[str, Any]
+    ) -> Iterator[tuple[int, "BaseModel"]]:
         """Read each row of a file written by DataChain into the output model by
         column position, as rows are read from the DB. A column the file lacks
         leaves its field out, so the field takes its default."""
@@ -1060,7 +1399,7 @@ class ArrowGenerator(Generator):
         wanted = {*names, *(tag for tag, _, _ in parents.values())}
         kw["columns"] = [c for c in schema.names if c in wanted]
         json_cols = json_columns(schema) or json_columns(self.input_schema)
-        for _, batch in read_batches(ds, self.nrows, **kw):
+        for start, batch in self._batches(ds, kw):
             values = {
                 name: column_values(column, name in json_cols)
                 for name, column in zip(batch.schema.names, batch.columns, strict=True)
@@ -1084,8 +1423,13 @@ class ArrowGenerator(Generator):
             absent = [ABSENT] * batch.num_rows
             # An output with no fields still takes one object per row.
             columns = [values.get(n, absent) for n in names] or [absent]
-            for row in zip(*columns, strict=True):
-                yield model(**unflatten_to_json_pos(model, row, 0, _build_model)[0])
+            idx = (
+                range(start, start + batch.num_rows)
+                if isinstance(start, int)
+                else start.to_pylist()
+            )
+            for i, row in zip(idx, zip(*columns, strict=True), strict=True):
+                yield i, model(**unflatten_to_json_pos(model, row, 0, _build_model)[0])
 
     def _process_record(
         self,
@@ -1173,9 +1517,12 @@ def _file_dataset(
     *,
     datachain_read: bool = False,
     parts: tuple[int, list[tuple[int, bytes]]] | None = None,
+    metadata_only: bool = False,
 ) -> Dataset | _LanceDataset:
     if is_lance(kwargs.get("format")):
-        return _LanceDataset(file, schema, datachain_read=datachain_read)
+        return _LanceDataset(
+            file, schema, datachain_read=datachain_read, metadata_only=metadata_only
+        )
     fs_path = file.get_fs_path()
     if cache_path := file.get_local_path():
         fs: Any = ReferenceFileSystem({fs_path: [cache_path]})
@@ -1184,23 +1531,96 @@ def _file_dataset(
     return dataset(fs_path, schema=schema, filesystem=fs, **kwargs)
 
 
-def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset | _LanceDataset]:
-    kwargs = _dataset_kwargs(kwargs)
-    for (file,) in chain.to_iter("file"):
-        yield _file_dataset(file, kwargs)  # type: ignore[arg-type]
+def _tabular_generator(
+    chain: "DataChain | None",
+    output: Any,
+    column: str,
+    model_name: str,
+    source: bool,
+    columns: Sequence[str] | None,
+    nrows: int | None = None,
+    schemas: list[tuple[str, pa.Schema]] | None = None,
+    **kwargs: Any,
+) -> tuple[ArrowGenerator, dict[str, Any]]:
+    format = kwargs.setdefault("format", "lance")
+    schema, read, written_by_datachain = None, None, None
+    col_names = output if isinstance(output, Sequence) else None
+    infer = bool(col_names) or not output
+    from_types = infer or isinstance(output, dict)
+    try:
+        if schemas is not None and chain is not None:
+            schemas = [*schemas, *file_schemas(chain, **kwargs)]
+        ordered = (
+            [s for _, s in sorted(schemas, key=lambda x: x[0])]
+            if schemas is not None
+            else [s for _, s in file_schemas(chain, **kwargs)]  # type: ignore[arg-type]
+            if infer
+            else None
+        )
+        if infer:
+            assert ordered is not None
+            schema, output, read = infer_output(
+                ordered, col_names, columns, source and not column
+            )
+        if isinstance(output, dict):
+            declared = infer and is_lance(format) and _written_by_datachain(schema)
+            model = dict_to_data_model(
+                model_name or column or "", output, optional=not declared
+            )
+        else:
+            model = output
+        if not infer:
+            read, schema = read_columns(
+                chain,  # type: ignore[arg-type]
+                columns,
+                model,
+                source and not column,
+                schema=ordered[0] if ordered else None,
+                **kwargs,
+            )
+            written_by_datachain = schema is not None
+    except (ValueError, pa.ArrowTypeError) as e:
+        from datachain.lib.dc.utils import DatasetPrepareError
+
+        name = "lance" if schemas is not None else chain.name  # type: ignore[union-attr]
+        raise DatasetPrepareError(name, e) from e
+
+    out: dict[str, Any] = (
+        {column: model}
+        if column
+        else {k: v.annotation for k, v in model.model_fields.items()}
+    )
+    if source:
+        out = {unique_name("source", out): ArrowRow} | out
+    partial = nrows or (columns is not None and is_parquet(format))
+    return (
+        ArrowGenerator(
+            schema,
+            model,
+            source,
+            nrows,
+            columns=read,
+            written_by_datachain=written_by_datachain,
+            output_from_types=from_types,
+            prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
+            projectable=infer and not col_names and not column and columns is None,
+            **kwargs,
+        ),
+        out,
+    )
 
 
-def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
-    """Return the schema of each file in the chain, by path, so the first file
-    gives the saved DataChain schema, as in `read_columns`."""
+def file_schemas(chain: "DataChain", **kwargs) -> list[tuple[str, pa.Schema]]:
+    """Return `(file.path, schema)` for each file in the chain, by path, so the
+    first file gives the saved DataChain schema, as in `read_columns`."""
     kwargs = _dataset_kwargs(kwargs)
     files = chain.order_by("file.path").to_values("file")
 
-    def file_schema(file: File) -> pa.Schema:
-        with safe_closing(_file_dataset(file, kwargs)) as ds:
+    def file_schema(file: File) -> tuple[str, pa.Schema]:
+        with safe_closing(_file_dataset(file, kwargs, metadata_only=True)) as ds:
             schema = ds.schema
         _check_type_tags(file, schema)
-        return schema
+        return file.path, schema
 
     # one remote footer read per file
     with ThreadPoolExecutor(max(1, min(SCHEMA_READ_THREADS, len(files)))) as pool:
@@ -1265,6 +1685,7 @@ def read_columns(
     columns: Sequence[str] | None,
     model: type["BaseModel"],
     replace_source: bool,
+    schema: pa.Schema | None = None,
     **kwargs,
 ) -> tuple[list[str], pa.Schema | None]:
     """Return the columns the output fields read, in order, and for files written
@@ -1274,11 +1695,14 @@ def read_columns(
     these names with its own types. Partition and pandas index columns at the end
     are left out when output has no fields for them.
     """
-    with safe_closing(
-        next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
-    ) as ds:
-        schema = ds.schema
-        fragments = ds.get_fragments() if isinstance(ds, Dataset) else None
+    fragments = None
+    if schema is None:
+        f0: Any = chain.order_by("file.path").limit(1).to_values("file")[0]
+        with safe_closing(
+            _file_dataset(f0, _dataset_kwargs(kwargs), metadata_only=True)
+        ) as ds:
+            schema = ds.schema
+            fragments = ds.get_fragments() if isinstance(ds, Dataset) else None
     fields = len(model.model_fields)
     if signal_schema := _get_datachain_schema(schema):
         signals = _signal_paths(signal_schema, columns, replace_source)
