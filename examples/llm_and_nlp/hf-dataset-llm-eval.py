@@ -33,7 +33,6 @@ def eval_dialog(
 ) -> DialogEval:
     try:
         completion = client.chat_completion(
-            # The router takes the provider from the model name's suffix.
             model="openai/gpt-oss-20b:groq",
             max_tokens=512,
             messages=[
