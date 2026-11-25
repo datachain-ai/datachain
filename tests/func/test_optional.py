@@ -14,6 +14,7 @@ from typing import Optional
 
 import pandas as pd
 import pyarrow.parquet as pq
+import pytest
 
 import datachain as dc
 from datachain.lib.data_model import DataModel, unwrap_optional
@@ -24,6 +25,10 @@ from tests.utils import skip_if_not_sqlite
 class _Inner(DataModel):
     score: int = 0
     label: str = ""
+
+
+class _Payload(DataModel):
+    name: Optional[str] = None
 
 
 class _WithFloat(DataModel):
@@ -1494,9 +1499,9 @@ def test_concat_all_null_group_is_none(test_session):
 
 
 def test_outer_merge_unmatched_model_is_none(test_session):
-    """An outer/full merge of a plain DataModel returns None for unmatched rows
-    on both backends, not a default-filled instance (the model's leaves widen to
-    nullable, so the all-NULL row hydrates as None)."""
+    """An outer/full merge of a plain DataModel widens it to Optional and
+    returns None for unmatched rows on both backends, not a default-filled
+    instance."""
     left = dc.read_values(k=[1], session=test_session, output={"k": int})
     right = dc.read_values(
         k=[2],
@@ -1504,5 +1509,82 @@ def test_outer_merge_unmatched_model_is_none(test_session):
         output={"k": int, "m": _Inner},
         session=test_session,
     )
-    got = left.merge(right, on="k", full=True).order_by("k").to_values("m")
+    merged = left.merge(right, on="k", full=True)
+    assert merged.signals_schema.values["m"] == _Inner | None
+    got = merged.order_by("k").to_values("m")
     assert got == [None, _Inner(score=9, label="x")]
+
+
+@pytest.mark.parametrize("full", [False, True], ids=["left", "full"])
+def test_outer_merge_distinguishes_matched_all_null_model_from_unmatched(
+    test_session, full
+):
+    empty = _Payload(name=None)
+    left = dc.read_values(
+        k=[1, 2],
+        lp=[empty, empty],
+        output={"k": int, "lp": _Payload},
+        session=test_session,
+    )
+    right = dc.read_values(
+        k=[1, 3] if full else [1],
+        rp=[empty, empty] if full else [empty],
+        output={"k": int, "rp": _Payload},
+        session=test_session,
+    )
+    merged = left.merge(right, on="k", full=full)
+
+    def rows(chain):
+        return {
+            (k, rk): (lp, rp)
+            for k, rk, lp, rp in chain.to_list("k", "right_k", "lp", "rp")
+        }
+
+    expected = {
+        (1, 1): (_Payload(name=None), _Payload(name=None)),
+        (2, None): (_Payload(name=None), None),
+    }
+    if full:
+        expected[(None, 3)] = (None, _Payload(name=None))
+
+    assert rows(merged.filter(dc.C("k").is_(None) | (dc.C("k") > 0))) == expected
+    assert merged.filter(dc.func.isnone("rp")).to_values("k") == [2]
+    if full:
+        assert merged.filter(dc.func.isnone("lp")).to_values("right_k") == [3]
+
+    extra = dc.read_values(
+        k=[4],
+        lp=[_Payload(name="z")],
+        right_k=[4],
+        rp=[_Payload(name="z")],
+        output={"k": int, "lp": _Payload, "right_k": int, "rp": _Payload},
+        session=test_session,
+    )
+    expected_union = {**expected, (4, 4): (_Payload(name="z"), _Payload(name="z"))}
+    assert rows(merged.union(extra)) == expected_union
+    assert rows(extra.union(merged)) == expected_union
+
+    ds_name = f"outer_merge_all_null_{full}"
+    merged.save(ds_name)
+    assert rows(dc.read_dataset(ds_name, session=test_session)) == expected
+
+
+def test_outer_merge_typed_map_distinguishes_all_null_model_from_unmatched(
+    test_session,
+):
+    left = dc.read_values(k=[1, 2], output={"k": int}, session=test_session)
+    right = dc.read_values(
+        k=[1],
+        p=[_Payload(name=None)],
+        output={"k": int, "p": _Payload},
+        session=test_session,
+    )
+
+    def is_absent(p: _Payload | None) -> bool:
+        return p is None
+
+    merged = left.merge(right, on="k").map(absent=is_absent).order_by("k")
+    assert merged.to_list("p", "absent") == [
+        (_Payload(name=None), False),
+        (None, True),
+    ]
