@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import datachain as dc
+from datachain.lib.file import File
 from datachain.query.dispatch import (
     FINISHED_STATUS,
     STOP_SIGNAL,
@@ -168,44 +170,19 @@ def test_udf_entrypoint_restores_only_injected_safe_path(monkeypatch, mocker, in
     assert "_DATACHAIN_UDF_SAFE_PATH" not in os.environ
 
 
-def test_run_udf_single_uses_temporary_prefetch_cache(monkeypatch):
-    from contextlib import nullcontext
-
-    from datachain.query.dispatch import UDFDispatcher
-
-    catalog = MagicMock()
-    dispatcher = UDFDispatcher.__new__(UDFDispatcher)
-    dispatcher.udf_data = b""
-    dispatcher._catalog = catalog
-    dispatcher.cache = False
-    dispatcher.is_batching = False
-    dispatcher.udf_fields = []
-    dispatcher.table = MagicMock()
-    dispatcher.parts = None
-    dispatcher.batch_size = None
-    dispatcher.rows_total = 1
-    dispatcher.batching = None
-    dispatcher.query = MagicMock()
-
-    temp_cache = MagicMock()
-    passed_catalogs = []
-    udf = MagicMock(prefetch=16)
-
-    def run(udf_fields, inputs, cat, cache, **kwargs):
-        passed_catalogs.append(cat)
-        return iter([])
-
-    udf.run.side_effect = run
-    monkeypatch.setattr("datachain.query.dispatch.loads", lambda _: udf)
-    monkeypatch.setattr(
-        "datachain.query.dispatch._get_cache",
-        lambda *a, **kw: nullcontext(temp_cache),
+def test_run_udf_single_uses_temporary_prefetch_cache(test_session):
+    seen_caches = []
+    res = (
+        dc.read_values(file=[File(path="")], session=test_session)
+        .settings(prefetch=1, cache=False)
+        .map(
+            ok=lambda file: seen_caches.append(file._catalog.cache) or 1,
+            output=int,
+        )
+        .to_values("ok")
     )
-    monkeypatch.setattr(
-        "datachain.query.dispatch.process_udf_outputs", lambda *a, **kw: None
-    )
-
-    dispatcher.run_udf_single([])
-    assert len(passed_catalogs) == 1
-    assert passed_catalogs[0] is catalog.copy.return_value
-    assert passed_catalogs[0].cache is temp_cache
+    assert res == [1]
+    assert len(seen_caches) == 1
+    assert seen_caches[0].cache_dir != test_session.catalog.cache.cache_dir
+    assert seen_caches[0]._fallback.cache_dir == test_session.catalog.cache.cache_dir
+    assert not os.path.exists(seen_caches[0].cache_dir)

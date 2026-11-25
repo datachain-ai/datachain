@@ -1,8 +1,10 @@
+import asyncio
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from tempfile import mkdtemp
 from typing import TYPE_CHECKING
+from weakref import WeakValueDictionary
 
 from dvc_data.hashfile.db.local import LocalHashFileDB
 from dvc_objects.fs.local import LocalFileSystem
@@ -61,6 +63,16 @@ class Cache:  # noqa: PLW1641
         )
         # Read-only fallback consulted on cache misses.
         self._fallback = fallback
+        self._download_locks: WeakValueDictionary[str, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
+
+    def _download_lock(self, file: "File") -> asyncio.Lock:
+        oid = file.get_hash()
+        lock = self._download_locks.get(oid)
+        if lock is None:
+            self._download_locks[oid] = lock = asyncio.Lock()
+        return lock
 
     def __eq__(self, other) -> bool:
         return self.odb == other.odb

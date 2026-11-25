@@ -873,8 +873,9 @@ def test_read_parquet_columns_shares_byte_budget_across_prefetched_files(
     assert len(http_requests) == 6 * 2
 
 
+@pytest.mark.parametrize("use_prefetch_bytes", [False, True])
 def test_read_parquet_columns_fetches_ranges_in_process_when_prefetch_budget_full(
-    tmp_path, test_session, http_server, http_requests, monkeypatch
+    tmp_path, test_session, http_server, http_requests, monkeypatch, use_prefetch_bytes
 ):
     urls = []
     for i in range(2):
@@ -895,11 +896,15 @@ def test_read_parquet_columns_fetches_ranges_in_process_when_prefetch_budget_ful
     monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
     monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 65536)
     # Holds 1 file (~66 KiB), so a second prefetched file defers to process().
-    monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 70_000)
+    settings = {"prefetch": 2}
+    if use_prefetch_bytes:
+        settings["prefetch_bytes"] = 70_000
+    else:
+        monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 70_000)
     chain = dc.read_parquet(
         urls,
         columns=["a"],
-        settings={"prefetch": 2},
+        settings=settings,
         session=test_session,
     )
     http_requests.clear()

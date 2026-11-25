@@ -49,6 +49,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
         *,
         workers: int = ASYNC_WORKERS,
         loop: asyncio.AbstractEventLoop | None = None,
+        on_shutdown: Callable[[], None] | None = None,
     ):
         self.func = func
         self.iterable = iterable
@@ -58,6 +59,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
         self._tasks: set[asyncio.Task] = set()
         self._shutdown_producer = threading.Event()
         self._producer_is_shutdown = threading.Event()
+        self._on_shutdown = on_shutdown
 
     def start_task(self, coro: Coroutine) -> asyncio.Task:
         task = self.loop.create_task(coro)
@@ -91,6 +93,8 @@ class AsyncMapper(Generic[InputT, ResultT]):
         delay.
         """
         self._shutdown_producer.set()
+        if self._on_shutdown is not None:
+            self._on_shutdown()
         q = self.work_queue
         while not q.empty():
             q.get_nowait()
@@ -125,6 +129,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
             self.gather_exceptions(done)
             assert join.done()
         except:
+            self.shutdown_producer()
             await self.cancel_all()
             await self._break_iteration()
             raise

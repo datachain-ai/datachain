@@ -287,10 +287,13 @@ class ArrowGenerator(Generator):
             nonlocal reserved
             if not prefetch:
                 return n <= parquet_ranges.PARQUET_RANGE_MAX_BYTES
+            max_bytes = parquet_ranges.PARQUET_RANGE_MAX_BYTES
+            if self.prefetch_bytes is not None:
+                max_bytes = min(max_bytes, self.prefetch_bytes)
             with self._parts_lock:
                 if (
                     cancelled is not None and cancelled.is_set()
-                ) or n > parquet_ranges.PARQUET_RANGE_MAX_BYTES - self._parts_bytes:
+                ) or n > max_bytes - self._parts_bytes:
                     return False
                 self._parts_bytes += n
                 reserved = n
