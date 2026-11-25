@@ -618,6 +618,19 @@ def test_path_filter_python_matches_sql(test_session, paths):
     assert sorted(chain.to_values("path")) == sorted(filter(paths.matcher(), names))
 
 
+@pytest.mark.parametrize(
+    "pattern,path,expected",
+    [
+        ("a[^b]c/x", "a/c/x", False),
+        ("a[^b]c/x", "adc/x", True),
+        ("a[.-0]c/x", "a/c/x", False),
+        ("a[.-0]c/x", "a.c/x", True),
+    ],
+)
+def test_pattern_class_stays_in_one_folder(pattern, path, expected):
+    assert path_filter("", [pattern], True).matcher()(path) is expected
+
+
 def test_glob_match_is_sqlite_glob_on_random_patterns():
     rng = random.Random(0)  # noqa: S311
     with closing(sqlite3.connect(":memory:")) as conn:

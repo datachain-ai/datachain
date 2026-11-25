@@ -107,6 +107,7 @@ GLOB_PATTERNS = [
     "**/r?port.json",
     "**/nested/*.json",
     "**/rep dir/*.json",
+    "**/*d*y.json",
     "**/nested/**/report.json",
     "**/**/report.json",
     "*/**/report.json",
