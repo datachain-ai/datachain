@@ -3,7 +3,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from tempfile import mkdtemp
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 from weakref import WeakValueDictionary
 
 from dvc_data.hashfile.db.local import LocalHashFileDB
@@ -50,6 +50,10 @@ def temporary_cache(
 
 
 class Cache:  # noqa: PLW1641
+    _download_locks: ClassVar[WeakValueDictionary[tuple[str, str], asyncio.Lock]] = (
+        WeakValueDictionary()
+    )
+
     def __init__(
         self,
         cache_dir: str,
@@ -63,15 +67,12 @@ class Cache:  # noqa: PLW1641
         )
         # Read-only fallback consulted on cache misses.
         self._fallback = fallback
-        self._download_locks: WeakValueDictionary[str, asyncio.Lock] = (
-            WeakValueDictionary()
-        )
 
     def _download_lock(self, file: "File") -> asyncio.Lock:
-        oid = file.get_hash()
-        lock = self._download_locks.get(oid)
+        key = (self.cache_dir, file.get_hash())
+        lock = self._download_locks.get(key)
         if lock is None:
-            self._download_locks[oid] = lock = asyncio.Lock()
+            self._download_locks[key] = lock = asyncio.Lock()
         return lock
 
     def __eq__(self, other) -> bool:
