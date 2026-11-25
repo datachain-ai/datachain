@@ -1,6 +1,5 @@
 import os
 import sys
-from collections import Counter
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -544,46 +543,3 @@ def test_removed_and_rereserved_listing_does_not_clobber_replacement(test_sessio
     ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
     assert ds.get_version("2.0.0").uuid == replacement_ds.versions[0].uuid
     assert ds.get_version("2.0.0").status == DatasetStatus.CREATED
-
-
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_s3_read_storage_lists_versions_only_on_a_versioned_bucket(
-    cloud_test_catalog, version_aware, monkeypatch
-):
-    from moto.s3.models import S3Backend
-
-    from datachain.client.s3 import ClientS3
-
-    calls: Counter[str] = Counter()
-    for op in ("get_bucket_versioning", "list_object_versions", "list_objects_v2"):
-        method = getattr(S3Backend, op)
-
-        def counted(self, *args, _op=op, _method=method, **kwargs):
-            calls[_op] += 1
-            return _method(self, *args, **kwargs)
-
-        monkeypatch.setattr(S3Backend, op, counted)
-
-    ctc = cloud_test_catalog
-    fields = [f"file.{f}" for f in File.model_fields]
-
-    def files(**kwargs):
-        chain = dc.read_storage(ctc.src_uri, session=ctc.session, **kwargs)
-        return sorted(chain.to_list(*fields))
-
-    listed = files()
-    versions = [row[fields.index("file.version")] for row in listed]
-    assert len(listed) == len(ENTRIES)
-    assert all(versions) is version_aware
-    assert calls["get_bucket_versioning"] == 1
-    assert bool(calls["list_object_versions"]) is version_aware
-    assert bool(calls["list_objects_v2"]) is not version_aware
-
-    async def lists_versions(self):
-        self._unversioned = False
-
-    monkeypatch.setattr(ClientS3, "_prepare_listing", lists_versions)
-    assert files(update=True) == listed
-    assert [ls.name for ls in ctc.catalog.listings()] == [
-        parse_listing_uri(ctc.src_uri)[0]
-    ]

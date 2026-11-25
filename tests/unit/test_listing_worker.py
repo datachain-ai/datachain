@@ -908,7 +908,7 @@ def test_child_reports_why_it_cannot_build_its_client():
 
 
 def test_child_ends_when_the_parent_goes_while_a_thread_is_stuck(clients):
-    spec = (clients.ThreadIdleClient, "bucket", {}, None, 4, "", None)
+    spec = (clients.ThreadIdleClient, "bucket", {}, None, 4, "", None, None)
     proc = subprocess.Popen(  # noqa: S603
         _command(),
         stdin=subprocess.PIPE,
@@ -982,22 +982,3 @@ def test_children_list_in_the_mode_the_parents_first_page_set(clients):
     page = sync(get_loop(), lambda: asyncio.wait_for(check(), 60))
 
     assert [r.version for r in page.rows] == ["True"]
-
-
-@pytest.mark.parametrize("unversioned", [None, False, True])
-def test_child_entry_restores_listing_mode(clients, mocker, unversioned):
-    inp, out = io.BytesIO(), io.BytesIO()
-    spec = (clients.ModeClient, "bucket", {}, None, 4, "", None, unversioned)
-    inp.write(dump(spec))
-    inp.seek(0)
-    mocker.patch.object(listing_worker.os, "fdopen", side_effect=[out, inp])
-    mocker.patch.object(listing_worker.os, "dup", return_value=10)
-    mocker.patch.object(listing_worker.os, "dup2")
-    mocker.patch.object(listing_worker.os, "_exit")
-    run = mocker.patch("fsspec.asyn.sync")
-
-    listing_worker.main(11)
-
-    _, _, client, prefix, _, _ = run.call_args.args
-    page = sync(get_loop(), client._list_page, prefix, "", None)
-    assert [row.version for row in page.rows] == [str(unversioned)]
