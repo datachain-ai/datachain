@@ -82,7 +82,7 @@ class Cache:  # noqa: PLW1641
         self._init_download_state()
 
     @asynccontextmanager
-    async def _download_lock(self, file: "File", fs) -> AsyncIterator[None]:
+    async def _download_lock(self, file: "File", fs=None) -> AsyncIterator[None]:
         key = (asyncio.get_running_loop(), file.get_hash(), id(fs))
         lock, users = self._download_locks.get(key, (asyncio.Lock(), 0))
         self._download_locks[key] = (lock, users + 1)
@@ -102,14 +102,17 @@ class Cache:  # noqa: PLW1641
             self._prefetch_refs[oid] = self._prefetch_refs.get(oid, 0) + 1
         return oid
 
-    def _release_prefetched(self, oid: str) -> None:
+    def _release_prefetched(self, oid: str, file: "File | None" = None) -> None:
         with self._prefetch_lock:
             users = self._prefetch_refs[oid]
             if users > 1:
                 self._prefetch_refs[oid] = users - 1
-            else:
-                del self._prefetch_refs[oid]
-                self._remove(oid)
+                return
+            del self._prefetch_refs[oid]
+        if file is not None:
+            self.remove(file)
+        else:
+            self._remove(oid)
 
     def __eq__(self, other) -> bool:
         return self.odb == other.odb

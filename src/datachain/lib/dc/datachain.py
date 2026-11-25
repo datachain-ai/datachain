@@ -589,7 +589,7 @@ class DataChain:
                 Set to 0 for UDFs that read only part of a file, such as `get_info()`.
             prefetch_bytes: Listed-byte read-ahead target per process, default
                 512 MiB. A minimum row count can exceed this target.
-                Unset with explicit `prefetch=N`.
+                No default when `prefetch=N` is set.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. Each process has its own UDF and setup resources.
                 If an integer is provided, it specifies the number of CPUs to use.
@@ -1275,7 +1275,7 @@ class DataChain:
                     "Use batch_map(..., batch=N) for UDF batching; "
                     "settings(batch_size=N) controls database insert buffering."
                 )
-            elif name in {"parallel", "prefetch", "cache", "workers"}:
+            elif name in {"parallel", "prefetch", "prefetch_bytes", "cache", "workers"}:
                 hint = f"Use settings({name}=...) before {method}()."
             else:
                 hint = "Named outputs must be functions or UDF instances."
@@ -1675,9 +1675,7 @@ class DataChain:
         udf_obj.prefetch_bytes = None
         udf_obj._prefetch_min_rows = 1
         # Batches keep the plain count; rows without files have nothing to fetch.
-        if udf_obj.is_input_batched or not (
-            udf_obj.params and any(udf_obj.params._file_stream_params.values())
-        ):
+        if udf_obj.is_input_batched or not udf_obj._has_file_inputs:
             return
         udf_obj.prefetch_bytes = settings.prefetch_bytes
         if settings.prefetch_auto:
