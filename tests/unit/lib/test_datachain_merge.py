@@ -659,3 +659,20 @@ def test_filter_after_merge_does_not_bind_size_inside_sqlalchemy_select(test_ses
     allowed = sa.select(sa.literal(3).label("size")).subquery()
     in_allowed = C("right_size").in_(sa.select(C("size")).select_from(allowed))
     assert merged.filter(in_allowed).to_list("path", "right_size") == [("x", 3)]
+
+
+def test_sql_join_hash_includes_model_tags(test_session):
+    left = dc.read_values(id=[1], session=test_session)._query
+    right = dc.read_values(id=[1], session=test_session)._query
+    base = left.join(right, "id").steps[-1].hash()
+    with_left = (
+        left.join(right, "id", left_tags=(("p___type_tag", "Payload"),))
+        .steps[-1]
+        .hash()
+    )
+    with_right = (
+        left.join(right, "id", right_tags=(("p___type_tag", "Payload"),))
+        .steps[-1]
+        .hash()
+    )
+    assert len({base, with_left, with_right}) == 3

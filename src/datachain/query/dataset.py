@@ -2117,6 +2117,8 @@ class SQLJoin(Step):
             str(self.inner).encode(),
             str(self.full).encode(),
             self.rname.encode("utf-8"),
+            repr(self.left_tags).encode("utf-8"),
+            repr(self.right_tags).encode("utf-8"),
         ]
 
         return hashlib.sha256(b"".join(parts)).hexdigest()
