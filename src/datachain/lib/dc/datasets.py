@@ -338,7 +338,8 @@ def datasets(
     Args:
         session: Optional session instance. If not provided, uses default session.
         settings: Optional dictionary of settings to configure the chain.
-        in_memory: If True, creates an in-memory session. Defaults to False.
+        in_memory: If True, lists the datasets of the in-memory session, where
+            chains created with `in_memory=True` save. Defaults to False.
         column: Name of the output column in the chain. Defaults to None which
             means no top level column will be created.
         include_listing: If True, includes listing datasets. Defaults to False.
@@ -437,7 +438,8 @@ def delete_dataset(
         studio: If True, removes dataset from Studio only, otherwise removes local
             dataset. Defaults to False.
         session: Optional session instance. If not provided, uses default session.
-        in_memory: If True, creates an in-memory session. Defaults to False.
+        in_memory: If True, deletes from the in-memory session, where chains
+            created with `in_memory=True` save. Defaults to False.
 
     Returns: None
 
@@ -514,7 +516,8 @@ def move_dataset(
             will be used in that case). The original dataset will be moved here.
         session: An optional session instance. If not provided, the default session
             will be used.
-        in_memory: If True, creates an in-memory session. Defaults to False.
+        in_memory: If True, moves within the in-memory session, where chains
+            created with `in_memory=True` save. Defaults to False.
 
     Returns:
         None
