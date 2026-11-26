@@ -283,6 +283,7 @@ def describe(
     session: Session | None = None,
     *,
     studio: bool = False,
+    in_memory: bool = False,
 ) -> DatasetDescription:
     """Describe a saved dataset using recorded metadata only.
 
@@ -293,6 +294,8 @@ def describe(
         version: Exact version to describe; defaults to the latest complete version.
         session: Optional session; defaults to the current session.
         studio: Read Studio directly instead of a local copy.
+        in_memory: If True, describes a dataset of the in-memory session, where
+            chains created with `in_memory=True` save. Defaults to False.
 
     Returns:
         DatasetDescription with a typed schema, every available completed version,
@@ -311,7 +314,7 @@ def describe(
         info.schema.print_tree()
         ```
     """
-    catalog = Session.get(session).catalog
+    catalog = Session.get(session, in_memory=in_memory).catalog
     metadata = read_dataset_metadata(
         catalog,
         name,

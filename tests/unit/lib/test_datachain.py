@@ -724,6 +724,14 @@ def test_datasets_studio(studio_datasets, test_session):
     assert len(datasets) == 0
 
 
+def test_describe_in_memory_after_in_memory_save_finds_it():
+    dc.read_values(x=[1, 2], in_memory=True).save("in_memory_ds")
+
+    description = dc.describe("in_memory_ds", in_memory=True)
+
+    assert description.selected_version.num_objects == 2
+
+
 def test_datasets_in_memory():
     ds = dc.datasets(column="dataset", in_memory=True)
     assert ds.session.catalog.in_memory is True
@@ -928,6 +936,18 @@ def test_listings_read_listing_dataset_with_subpath(test_session, tmp_dir):
     assert len(files) == 1
     assert files[0].path == "subdir/df3.parquet"
     assert files[0].source == tmp_dir.as_uri()
+
+
+def test_read_listing_dataset_in_memory_after_in_memory_listing_reads_it(tmp_dir):
+    (tmp_dir / "a.txt").write_text("a")
+    uri = tmp_dir.as_uri()
+    dc.read_storage(uri, in_memory=True).exec()
+    ds_name, _, _ = parse_listing_uri(uri)
+
+    chain, listing_version = read_listing_dataset(ds_name, in_memory=True)
+
+    assert listing_version.num_objects == 1
+    assert chain.to_values("file.path") == ["a.txt"]
 
 
 def test_preserve_feature_schema(test_session):
