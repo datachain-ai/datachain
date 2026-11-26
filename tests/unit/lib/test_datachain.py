@@ -388,6 +388,33 @@ def test_read_records_basic_in_memory():
     assert set(ds.schema.values()) == {File}
 
 
+def test_map_in_memory_with_studio_workers_and_parallel_defaults_runs(monkeypatch):
+    monkeypatch.setenv(
+        "DATACHAIN_DISTRIBUTED", "tests.unit.test_catalog_loader.DistributedClass"
+    )
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED_DISABLED", raising=False)
+    monkeypatch.setenv("DATACHAIN_SETTINGS_WORKERS", "2")
+    monkeypatch.setenv("DATACHAIN_SETTINGS_PARALLEL", "2")
+
+    chain = dc.read_values(x=[1, 2, 3], in_memory=True).map(
+        y=lambda x: x + 1, output=int
+    )
+
+    assert sorted(chain.to_values("y")) == [2, 3, 4]
+
+
+@pytest.mark.parametrize("settings", [{"workers": 2}, {"parallel": 2}])
+def test_map_in_memory_with_explicit_workers_or_parallel_raises(settings):
+    chain = (
+        dc.read_values(x=[1, 2, 3], in_memory=True)
+        .settings(**settings)
+        .map(y=lambda x: x + 1, output=int)
+    )
+
+    with pytest.raises(RuntimeError, match="In-memory databases cannot be used"):
+        chain.to_values("y")
+
+
 @pytest.mark.parametrize(
     "combine",
     [

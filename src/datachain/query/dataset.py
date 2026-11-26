@@ -674,6 +674,10 @@ class UDFStep(Step, ABC):
 
         workers = determine_workers(self.workers, rows_total=rows_to_process)
         processes = determine_processes(self.parallel, rows_total=rows_to_process)
+        # Worker and process defaults from the environment don't apply in memory.
+        in_memory = catalog.in_memory
+        workers = workers if self.workers or not in_memory else False
+        processes = processes if self.parallel is not None or not in_memory else False
         logger.debug(
             "UDF(%s): Processing %d rows (workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
