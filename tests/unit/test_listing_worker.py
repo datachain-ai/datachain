@@ -22,6 +22,7 @@ from datachain.client.fsspec import Client, RangeListedClient
 from datachain.client.listing_worker import (
     Pool,
     Rows,
+    _child_client,
     _command,
     _receive,
     _serve,
@@ -963,6 +964,14 @@ def test_children_die_when_the_parent_exits_with_the_listing_open(clients):
 
     assert len(pids) == 2
     assert not _alive_after(pids, 20)
+
+
+def test_a_child_builds_the_parents_client_in_its_listing_mode(clients):
+    parent = clients.ModeClient("bucket", {}, None)
+    child, prefix = _child_client((*Pool(parent, "dir/", 1).spec, True))
+
+    assert type(child) is type(parent)
+    assert (child.name, child._unversioned, prefix) == ("bucket", True, "dir/")
 
 
 def test_children_list_in_the_mode_the_parents_first_page_set(clients):
