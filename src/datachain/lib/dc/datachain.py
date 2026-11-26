@@ -482,8 +482,9 @@ class DataChain:
     def job(self) -> Job:
         """Get the job for this chain.
 
-        Returns the existing job if running in SaaS, or creates a new one if
-        running locally.
+        Returns the existing job if running in Studio, or creates a new one if
+        running locally. In the rare case of an in-memory chain, it is a job of
+        the in-memory catalog instead.
         """
         if self._settings.ephemeral:
             raise RuntimeError(
