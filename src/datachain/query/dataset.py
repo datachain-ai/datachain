@@ -1833,6 +1833,7 @@ class RegenerateSystemColumns(Step):
 
 
 _SYS = frozenset({"sys__id", "sys__rand"})
+_SYS_NAMES = _SYS | {"rowid", "_rowid_", "oid"}  # SQLite's names of sys__id
 
 
 @frozen
@@ -2204,7 +2205,7 @@ class SQLJoin(Step):
             for p in ensure_sequence(self.predicates)
             if isinstance(p, (str, ColumnElement))
         )
-        uses_sys = cols is None or bool(cols & _SYS)
+        uses_sys = _names_sys(cols)
         query = dq.apply_steps(uses_sys=uses_sys).select()
         if tags:
             tag_type = SQLType.as_nullable(String())
@@ -2552,10 +2553,13 @@ def _used_columns(steps: Sequence[Step]) -> set[str] | None:
     return used
 
 
+def _names_sys(cols: set[str] | None) -> bool:
+    # in any case: SQLite resolves column names case-insensitively
+    return cols is None or any(c.lower() in _SYS_NAMES for c in cols)
+
+
 def _uses_sys(step: Step) -> bool:
-    if (cols := step.used_columns()) is None:
-        return True
-    return bool(cols & _SYS)
+    return _names_sys(step.used_columns())
 
 
 def _read_filters(steps: Sequence[Step]) -> list[Any]:

@@ -1,5 +1,4 @@
-import operator
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Sequence
 from functools import reduce
 from operator import and_, or_
 from typing import Any
@@ -10,13 +9,10 @@ import sqlalchemy  # noqa: F401
 from sqlalchemy.sql import operators as sa_op
 from sqlalchemy.sql.elements import (
     BinaryExpression,
-    BindParameter,
     BooleanClauseList,
     ColumnClause,
-    False_,
     Grouping,
     Null,
-    True_,
     UnaryExpression,
 )
 from sqlalchemy.sql.visitors import iterate
@@ -24,16 +20,9 @@ from sqlalchemy.sql.visitors import iterate
 from datachain.hash_utils import hash_column_elements
 from datachain.lib.data_model import unwrap_optional
 from datachain.lib.utils import normalize_col_names
+from datachain.query.sql_filter import COMPARISONS, conjuncts, literal
 
 _NOT = (sa_op.inv, sa_op.is_false, sa_op.is_true)
-_COMPARISONS = (
-    operator.eq,
-    operator.ne,
-    operator.lt,
-    operator.le,
-    operator.gt,
-    operator.ge,
-)
 
 
 def _filter_fields(
@@ -57,14 +46,6 @@ def _filter_fields(
     return fields
 
 
-def _literal(node: Any) -> Any:
-    if isinstance(node, BindParameter):
-        return node.value
-    if isinstance(node, (True_, False_)):
-        return isinstance(node, True_)
-    return None
-
-
 def _filter_field(
     expr: Any, fields: dict[str, tuple[str, type]]
 ) -> tuple[str, type] | None:
@@ -76,7 +57,7 @@ def _filter_field(
 def _compare(
     col: pc.Expression, op: Any, right: Any, kind: type
 ) -> pc.Expression | None:
-    value = _literal(right)
+    value = literal(right)
     if op in (sa_op.is_, sa_op.is_not) and isinstance(right, Null):
         return col.is_null() if op is sa_op.is_ else col.is_valid()
     if op in (sa_op.is_, sa_op.is_not) and type(value) is kind is bool:
@@ -86,7 +67,7 @@ def _compare(
             else (col.is_null() | (col != value))
         )
     try:
-        if op in _COMPARISONS and type(value) is kind:
+        if op in COMPARISONS and type(value) is kind:
             return op(col, value)  # type: ignore[arg-type,return-value]
         if (
             op in (sa_op.in_op, sa_op.not_in_op)
@@ -95,7 +76,7 @@ def _compare(
         ):
             return col.isin(value) if op is sa_op.in_op else ~col.isin(value)
         if op in (sa_op.between_op, sa_op.not_between_op):
-            lo, hi = (_literal(b) for b in right.clauses)
+            lo, hi = (literal(b) for b in right.clauses)
             if type(lo) is kind and type(hi) is kind:
                 between = (col >= lo) & (col <= hi)
                 return between if op is sa_op.between_op else ~between
@@ -134,14 +115,6 @@ def _arrow_predicate(
     return None
 
 
-def _conjuncts(exprs: Iterable[Any]) -> Iterator[Any]:
-    for expr in exprs:
-        if isinstance(expr, BooleanClauseList) and expr.operator is and_:
-            yield from _conjuncts(expr.clauses)
-        else:
-            yield expr
-
-
 def to_arrow_filter(
     filters: Sequence[Any], schema: pa.Schema, output: dict[str, Any]
 ) -> tuple[pc.Expression, tuple[str, ...], str] | None:
@@ -150,7 +123,7 @@ def to_arrow_filter(
     fields = _filter_fields(schema, output)
     pushed = [
         (clause, expr)
-        for clause in _conjuncts(filters)
+        for clause in conjuncts(filters)
         if (expr := _arrow_predicate(clause, fields)) is not None
     ]
     if not pushed:
