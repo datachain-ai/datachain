@@ -388,6 +388,20 @@ def test_read_records_basic_in_memory():
     assert set(ds.schema.values()) == {File}
 
 
+def test_read_json_in_memory_inside_persistent_session_lists_nothing_there(
+    catalog_tmpfile, tmp_dir
+):
+    results = tmp_dir / "results"
+    results.mkdir()
+    (results / "r1.json").write_text('{"id": 1}')
+
+    with dc.Session("persistent", catalog=catalog_tmpfile):
+        chain = dc.read_json(results.as_uri(), in_memory=True)
+        assert chain.to_values("json.id") == [1]
+
+    assert catalog_tmpfile.listings() == []
+
+
 def test_map_in_memory_with_studio_workers_and_parallel_defaults_runs(monkeypatch):
     monkeypatch.setenv(
         "DATACHAIN_DISTRIBUTED", "tests.unit.test_catalog_loader.DistributedClass"
