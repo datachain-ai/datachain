@@ -22,6 +22,7 @@ def read_hf(
     column: str = "",
     model_name: str = "",
     limit: int = 0,
+    in_memory: bool = False,
     **kwargs: Any,
 ) -> "DataChain":
     """Generate chain from Hugging Face Hub dataset.
@@ -37,6 +38,8 @@ def read_hf(
         limit: The maximum number of items to read from the HF dataset.
             Applies `take(limit)` to `datasets.load_dataset`.
             Defaults to 0 (no limit).
+        in_memory: If True, the chain uses the in-memory session, so what it
+            saves is gone when the process exits. Defaults to False.
         kwargs: Parameters to pass to `datasets.load_dataset`.
 
     With several splits, each row also gets its split name in a "split" signal,
@@ -88,7 +91,12 @@ def read_hf(
     if column:
         output = {column: model}
 
-    chain = read_values(split=list(ds_dict.keys()), session=session, settings=settings)
+    chain = read_values(
+        split=list(ds_dict.keys()),
+        session=session,
+        settings=settings,
+        in_memory=in_memory,
+    )
     generator = HFGenerator(
         dataset, model, limit, *args, split_name=split_name, **kwargs
     )
