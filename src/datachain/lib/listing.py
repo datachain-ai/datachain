@@ -13,7 +13,9 @@ from hashlib import blake2b
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
-from sqlalchemy import or_, true
+from sqlalchemy import and_, bindparam, case, false, or_, true
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.functions import FunctionElement
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
@@ -27,10 +29,11 @@ from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import Column
 from datachain.sql.functions import path as pathfunc
+from datachain.sql.types import Boolean
 from datachain.utils import parent_path, safe_closing, uses_glob
 
 if TYPE_CHECKING:
-    from sqlalchemy import ColumnElement
+    from sqlalchemy import BindParameter, ColumnElement
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import RangeListedClient
@@ -169,12 +172,15 @@ def list_folder(path: str) -> str:
 
 @dataclass(frozen=True)
 class PathFilter:
-    """The paths of a listing that a URI selects: any of ``any_of`` and all of
-    ``all_of``, each an ``(op, value)`` with op ``eq``, ``glob`` or ``parent``.
+    """The paths of a listing that a URI selects: those that pass one of
+    ``any_of`` and, if there are ``alternatives``, all conditions of one of
+    them. A condition is an ``(op, value)``: op ``eq`` is a path, ``parent``
+    its folder, ``glob`` SQLite's GLOB, whose ``*`` crosses ``/``, and
+    ``pattern`` a glob matched folder by folder, whose ``**`` is any folders.
     ``read_storage`` applies it in SQL, ``dc.list_storage`` in Python."""
 
     any_of: tuple[tuple[str, str], ...] = ()
-    all_of: tuple[tuple[str, str], ...] = ()
+    alternatives: tuple[tuple[tuple[str, str], ...], ...] = ()
 
     @classmethod
     def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
@@ -186,45 +192,61 @@ class PathFilter:
             return cls(any_of=(("glob", path),))
         return cls(any_of=(("eq", path), ("glob", path.removesuffix("/") + "/*")))
 
-    def glob(self, pattern: str) -> "PathFilter":
-        return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
-
     def sql(self, path: Column) -> "list[ColumnElement]":
-        """One condition per filter step: ``any_of`` combined, then each of
-        ``all_of``. The steps feed chain hashes, so their split is kept."""
+        """One condition per filter step: ``any_of`` joined, then those of the
+        one alternative, or one for all of them. The steps feed chain hashes,
+        so their split is kept."""
 
         def cond(op: str, value: str) -> "ColumnElement":
             if op == "eq":
                 return path == value
             if op == "glob":
-                return path.glob(value)
+                return path.glob(_inline(value))
+            if op == "pattern":
+                regex = _pattern_regex(value, atomic=False)
+                if regex is None:
+                    return false()
+                atomic = _pattern_regex(value, atomic=True)
+                return _PatternMatch(path, f"^{regex}$", _inline(f"^{atomic}\\Z"))
             return pathfunc.parent(path) == value
 
         steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
-        return steps + [cond(*c) for c in self.all_of]
+        if len(self.alternatives) == 1:
+            return steps + [cond(*c) for c in self.alternatives[0]]
+        if self.alternatives:
+            # A CASE stays flat: SQLite parses a chain of ORs into a tree as
+            # deep as it is long, and refuses one deeper than 1000.
+            whens = [(and_(*(cond(*c) for c in a)), true()) for a in self.alternatives]
+            steps.append(case(*whens, else_=false()))
+        return steps
 
     def matcher(self) -> "Callable[[str], bool]":
         """The filter as a function of a path, built once for many rows."""
 
-        def check(op: str, value: str) -> "Callable[[str], bool]":
+        def check(op: str, value: str) -> "Callable[[str], object]":
             if op == "eq":
                 return value.__eq__
             if op == "glob":
-                regex = _glob_regex(value)
-                return lambda path: regex is not None and bool(regex.fullmatch(path))
+                return _glob_regex(value).fullmatch
+            if op == "pattern":
+                return _pattern_matcher(value).fullmatch
             return lambda path: parent_path(path) == value
 
         any_of = [check(*c) for c in self.any_of]
-        all_of = [check(*c) for c in self.all_of]
+        alternatives = [[check(*c) for c in a] for a in self.alternatives]
         return lambda path: (
             (not any_of or any(c(path) for c in any_of))
-            and all(c(path) for c in all_of)
+            and (not alternatives or any(all(c(path) for c in a) for a in alternatives))
         )
 
 
+_NOTHING = "(?!)"  # a regex that matches nothing
+
+
 @functools.lru_cache(maxsize=256)
-def _glob_parts(pattern: str) -> "list[str] | None":
-    """SQLite's GLOB split at ``*`` into regexes; None matches nothing."""
+def _glob_parts(pattern: str, one_folder: bool = False) -> "list[str] | None":
+    """SQLite's GLOB split at ``*`` into regexes; None matches nothing. With
+    ``one_folder``, ``?`` and ``[...]`` never match ``/``."""
     parts: list[list[str]] = []
     out: list[str] = []
     i, n = 0, len(pattern)
@@ -235,7 +257,7 @@ def _glob_parts(pattern: str) -> "list[str] | None":
             parts.append(out)
             out = []
         elif c == "?":
-            out.append(".")
+            out.append("[^/]" if one_folder else ".")
         elif c == "[":
             negate = i < n and pattern[i] == "^"
             j = i + negate
@@ -246,10 +268,12 @@ def _glob_parts(pattern: str) -> "list[str] | None":
             while j < n and pattern[j] != "]":
                 c = pattern[j]
                 if c == "-" and prior and j + 1 < n and pattern[j + 1] != "]":
-                    if prior <= pattern[j + 1]:
-                        members.append(
-                            f"{re.escape(prior)}-{re.escape(pattern[j + 1])}"
-                        )
+                    ranges = [(prior, pattern[j + 1])]
+                    if one_folder and not negate and prior <= "/" <= pattern[j + 1]:
+                        ranges = [(prior, "."), ("0", pattern[j + 1])]
+                    members += [
+                        f"{re.escape(a)}-{re.escape(b)}" for a, b in ranges if a <= b
+                    ]
                     prior = None
                     j += 2
                 else:
@@ -258,6 +282,8 @@ def _glob_parts(pattern: str) -> "list[str] | None":
                     j += 1
             if j >= n:
                 return None
+            if one_folder and negate:
+                members.append("/")
             out.append(f"[{'^' if negate else ''}{''.join(members)}]")
             i = j + 1
         else:
@@ -266,24 +292,88 @@ def _glob_parts(pattern: str) -> "list[str] | None":
     return ["".join(p) for p in parts]
 
 
-@functools.lru_cache(maxsize=256)
-def _glob_regex(pattern: str) -> "re.Pattern | None":
-    """SQLite's GLOB as a regex; None matches nothing. ``(?>...)`` keeps the
-    leftmost match of each part between stars, so matching stays linear."""
-    parts = _glob_parts(pattern)
-    if parts is None:
-        return None
+def _atomic_join(parts: list[str], star: str) -> str:
+    """``parts`` joined by ``star``, each part between stars kept at its
+    leftmost match by ``(?>...)``, so that matching stays linear."""
     head, *rest = parts
-    if rest:
-        *middle, tail = rest
-        head += "".join(f"(?>.*?{m})" for m in middle) + f".*{tail}"
-    return re.compile(head, re.DOTALL)
+    if not rest:
+        return head
+    *middle, tail = rest
+    return head + "".join(f"(?>{star}?{m})" for m in middle) + f"{star}{tail}"
+
+
+@functools.lru_cache(maxsize=256)
+def _glob_regex(pattern: str) -> re.Pattern:
+    """SQLite's GLOB as a regex."""
+    parts = _glob_parts(pattern)
+    return re.compile(
+        _NOTHING if parts is None else _atomic_join(parts, ".*"), re.DOTALL
+    )
+
+
+@functools.lru_cache(maxsize=256)
+def _pattern_regex(pattern: str, atomic: bool) -> "str | None":
+    """A glob ``pattern`` matched folder by folder, as a regex; None matches
+    nothing. ``*``, ``?`` and ``[...]`` stay in one folder and ``**`` is any
+    folders. The plain form is RE2's too. The ``atomic`` one, for Python's
+    ``re``, keeps each part between stars, and each run of folders between
+    two ``**``, at its leftmost match, so that matching stays linear."""
+    runs: list[list[str]] = [[]]
+    for segment in pattern.split("/"):
+        if segment == "**":
+            runs.append([])
+            continue
+        parts = _glob_parts(segment, one_folder=True)
+        if parts is None:
+            return None
+        runs[-1].append(_atomic_join(parts, "[^/]*") if atomic else "[^/]*".join(parts))
+    head, *rest = runs
+    if not rest:
+        return "/".join(head)
+    *middle, tail = rest
+    regex = "".join(f"{s}/" for s in head)
+    for run in middle:
+        folders = "".join(f"{s}/" for s in run)
+        regex += f"(?>(?:[^/]*/)*?{folders})" if atomic else f"(?:[^/]*/)*{folders}"
+    return f"{regex}(?:[^/]*/)*" + ("/".join(tail) if tail else "[^/]*")
+
+
+@functools.lru_cache(maxsize=256)
+def _pattern_matcher(pattern: str) -> re.Pattern:
+    regex = _pattern_regex(pattern, atomic=True)
+    return re.compile(_NOTHING if regex is None else regex)
+
+
+def _inline(value: str) -> "BindParameter":
+    """``value`` written into SQLite's SQL rather than bound: a URI can expand
+    to more patterns than old SQLite binds (999). ClickHouse binds GLOBs anew,
+    and gets only the RE2 regex, which stays bound."""
+    return bindparam(None, value, literal_execute=True)
+
+
+class _PatternMatch(FunctionElement):
+    """Whether a path matches a regex, given in RE2's form and in the one that
+    Python's ``re`` matches in linear time: SQLite's REGEXP is Python's."""
+
+    type = Boolean()
+    inherit_cache = True
+
+
+@compiles(_PatternMatch)
+def _compile_pattern_match(element, compiler, **kwargs):
+    path, regex, _ = element.clauses.clauses
+    return compiler.process(path.op("REGEXP", is_comparison=True)(regex), **kwargs)
+
+
+@compiles(_PatternMatch, "sqlite")
+def _compile_pattern_match_sqlite(element, compiler, **kwargs):
+    path, _, regex = element.clauses.clauses
+    return compiler.process(path.op("REGEXP", is_comparison=True)(regex), **kwargs)
 
 
 def glob_match(path: str, pattern: str) -> bool:
     """SQLite's GLOB."""
-    regex = _glob_regex(pattern)
-    return regex is not None and regex.fullmatch(path) is not None
+    return _glob_regex(pattern).fullmatch(path) is not None
 
 
 _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")
