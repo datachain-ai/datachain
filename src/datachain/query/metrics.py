@@ -14,10 +14,19 @@ def set(key: str, value: str | int | float | bool | None) -> None:  # noqa: PYI0
     metrics[key] = value
 
     if job_id := os.getenv("DATACHAIN_JOB_ID"):
+        from datachain.catalog.loader import get_metastore
         from datachain.query.session import Session
 
-        metastore = Session.get().catalog.metastore
-        metastore.update_job(job_id, metrics=metrics)
+        catalog = Session.get().catalog
+        if not catalog.in_memory:
+            catalog.metastore.update_job(job_id, metrics=metrics)
+            return
+        # The job lives in the configured metastore, not in the in-memory one.
+        metastore = get_metastore()
+        try:
+            metastore.update_job(job_id, metrics=metrics)
+        finally:
+            metastore.close_on_exit()
 
 
 def get(key: str) -> str | int | float | bool | None:
