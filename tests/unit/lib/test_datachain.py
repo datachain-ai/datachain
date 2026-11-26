@@ -403,6 +403,29 @@ def test_read_json_in_memory_inside_persistent_session_lists_nothing_there(
     assert catalog_tmpfile.listings() == []
 
 
+def test_read_storage_in_memory_inside_configured_session_uses_no_config(tmp_dir):
+    with dc.Session("p", client_config={"anon": True}):
+        chain = dc.read_storage(tmp_dir.as_uri(), in_memory=True)
+
+    assert chain.session.catalog.client_config == {}
+
+
+def test_list_storage_in_memory_inside_configured_session_saves_with_no_config(
+    tmp_dir,
+):
+    with dc.Session("p", client_config={"anon": True}):
+        listing = dc.list_storage(tmp_dir.as_uri(), in_memory=True)
+
+        assert listing.session.catalog.client_config == {}
+
+
+def test_read_storage_inside_configured_in_memory_session_uses_its_config(tmp_dir):
+    with dc.Session("m", client_config={"anon": True}, in_memory=True):
+        chain = dc.read_storage(tmp_dir.as_uri(), in_memory=True)
+
+    assert chain.session.catalog.client_config == {"anon": True}
+
+
 def test_map_in_memory_with_studio_workers_and_parallel_defaults_runs(monkeypatch):
     monkeypatch.setenv(
         "DATACHAIN_DISTRIBUTED", "tests.unit.test_catalog_loader.DistributedClass"
