@@ -168,13 +168,13 @@ def test_except_hook_preserves_interactive_session(
     test_session, monkeypatch, clean_job_state
 ):
     monkeypatch.setattr("sys.ps1", ">>> ", raising=False)
+    Session.GLOBAL_SESSION_CTX = test_session
+    chain = dc.read_values(value=[1, 2], session=test_session).persist()
+    job = test_session.get_or_create_job()
     called = []
     monkeypatch.setattr(
         Session, "ORIGINAL_EXCEPT_HOOK", lambda *args: called.append(args)
     )
-    Session.GLOBAL_SESSION_CTX = test_session
-    chain = dc.read_values(value=[1, 2], session=test_session).persist()
-    job = test_session.get_or_create_job()
 
     try:
         try:

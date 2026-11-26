@@ -154,3 +154,65 @@ def test_job_marked_on_exception(
     dataset_names = {ds.name for ds, _, _ in dataset_versions}
     assert "dataset_a" in dataset_names
     assert "dataset_b" in dataset_names
+
+
+def _run_script(script, catalog):
+    return subprocess.run(  # noqa: S603
+        [python_exc, str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            **os.environ,
+            "DATACHAIN__METASTORE": catalog.metastore.serialize(),
+            "DATACHAIN__WAREHOUSE": catalog.warehouse.serialize(),
+        },
+    )
+
+
+@skip_if_not_sqlite
+def test_script_error_inside_its_own_session_marks_job_failed(
+    tmp_path, catalog_tmpfile
+):
+    script = tmp_path / "script.py"
+    script.write_text(
+        textwrap.dedent("""
+        import datachain as dc
+
+        with dc.Session("own"):
+            dc.read_values(a=[1]).save("a")
+            raise RuntimeError("Intentional failure")
+    """)
+    )
+
+    result = _run_script(script, catalog_tmpfile)
+
+    assert result.returncode == 1
+    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
+    assert job is not None
+    assert job.status == JobStatus.FAILED, result.stderr
+    assert "Intentional failure" in job.error_message
+
+
+@skip_if_not_sqlite
+def test_script_ctrl_c_inside_its_own_session_marks_job_canceled(
+    tmp_path, catalog_tmpfile
+):
+    script = tmp_path / "script.py"
+    script.write_text(
+        textwrap.dedent("""
+        import datachain as dc
+
+        with dc.Session("own"):
+            dc.read_values(a=[1]).save("a")
+            raise KeyboardInterrupt()
+    """)
+    )
+
+    result = _run_script(script, catalog_tmpfile)
+
+    assert result.returncode == 130
+    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
+    assert job is not None
+    assert job.status == JobStatus.CANCELED, result.stderr
