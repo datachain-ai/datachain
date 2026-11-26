@@ -14,7 +14,7 @@ from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
 from botocore.configprovider import ConstantProvider
-from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.session import Session
 from botocore.utils import parse_timestamp
@@ -559,10 +559,11 @@ class ClientS3(RangeListedClient):
         endpoint = s3.meta.endpoint_url if s3 else ""
         return not (self.name.endswith("--x-s3") or "r2.cloudflarestorage" in endpoint)
 
-    async def _settle_versions(self) -> None:
+    async def _settle_versions(self, prefix: str) -> None:
         # a bucket that never had versioning on holds no old versions, and
         # ListObjectsV2 lists the same rows as ListObjectVersions, for less
-        if self._unversioned is not None or not self._is_version_aware():
+        if not self._is_version_aware():
+            self._unversioned = True
             return
         await self.fs.set_session()
         s3 = await self.fs.get_s3(self.name)
@@ -570,10 +571,20 @@ class ClientS3(RangeListedClient):
             unversioned = not self._lists_in_key_order() or (
                 "Status" not in await s3.get_bucket_versioning(Bucket=self.name)
             )
-        except (ClientError, BotoCoreError):  # such as denied: list versions
-            unversioned = False
-        if self._unversioned is None:  # a concurrent page may have settled it
-            self._unversioned = unversioned
+        except ClientError:  # such as denied: a version listing tells
+            try:
+                await s3.list_object_versions(
+                    Bucket=self.name, Prefix=prefix, MaxKeys=1, **self.fs.req_kw
+                )
+                unversioned = False
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code")
+                if code not in ("NotImplemented", "AccessDenied"):
+                    raise
+                # stores without version support hold only current objects; a
+                # caller denied listing versions can list only those
+                unversioned = True
+        self._unversioned = unversioned
 
     async def _list_page(
         self,
@@ -584,7 +595,8 @@ class ClientS3(RangeListedClient):
         page_size: int | None = None,
         delimiter: str = "",
     ) -> Page:
-        await self._settle_versions()
+        if self._unversioned is None:  # outside a listing, such as has_keys
+            await self._settle_versions(prefix)
         versions = self._is_version_aware() and not self._unversioned
         kwargs: dict[str, Any] = {"Delimiter": delimiter} if delimiter else {}
         if versions:
@@ -609,20 +621,6 @@ class ClientS3(RangeListedClient):
                 MaxKeys=page_size or self.LIST_PAGE_SIZE,
                 **kwargs,
                 **self.fs.req_kw,  # requester_pays
-            )
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code")
-            if (
-                not versions
-                or token is not None
-                or code not in ("NotImplemented", "AccessDenied")
-            ):
-                raise
-            # stores without version support, such as R2, hold only current
-            # objects; a caller denied listing versions can list only those
-            self._unversioned = True
-            return await self._list_page(
-                prefix, start_after, None, hi, page_size, delimiter
             )
         finally:
             _ROWS_OF.reset(rows_of)

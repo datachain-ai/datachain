@@ -149,12 +149,11 @@ class Pool:
     any page a child fails or loses, so errors reach the user as raised."""
 
     def __init__(self, client: "RangeListedClient", prefix: str, size: int) -> None:
-        self.client = client
         # the page size travels so that tests can shrink it in children too
         spec = (type(client), client.name, client.fs_kwargs, client.cache)
-        self.spec = (*spec, client.LIST_PAGE_SIZE, prefix, client.encode_page)
+        listing = (client.LIST_PAGE_SIZE, prefix, client.encode_page)
         try:
-            dump(self.spec)
+            self.spec = dump((*spec, *listing, client._unversioned))
         except Exception:
             logger.debug(
                 "Listing in one process: client config does not pickle", exc_info=True
@@ -179,8 +178,7 @@ class Pool:
             self.procs.append(proc := await _spawn())
             assert proc.stdin
             assert proc.stdout
-            # children start after the parent's first page settled the mode
-            proc.stdin.write(dump((*self.spec, self.client._unversioned)))
+            proc.stdin.write(self.spec)
             if error := await _receive(proc.stdout):
                 logger.debug("Listing process cannot list:\n%s", error)
                 return

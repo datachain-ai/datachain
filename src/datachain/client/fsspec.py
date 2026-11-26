@@ -674,8 +674,8 @@ class RangeListedClient(Client):
 
     LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
     NAMES_FOLDERS: ClassVar[bool] = False  # whether it names them (``Page.folders``)
-    # lists current objects only, as the storage holds no old versions; None
-    # until a listing checks
+    # lists current objects only: no versions were asked for, or the storage
+    # holds or lists none; None until a listing settles it
     _unversioned: bool | None = None
 
     def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
@@ -697,11 +697,15 @@ class RangeListedClient(Client):
 
     _fetch_default = _fetch_ranges
 
+    async def _settle_versions(self, prefix: str) -> None:
+        """Sets ``_unversioned`` for a listing under ``prefix``, before its pages."""
+
     async def _fetch_prefix(self, start_prefix: str, result_queue: ResultQueue) -> None:
         """Keys that start with ``start_prefix``, which needn't end a folder."""
         from .listing_worker import LIST_PROCESSES, Pool
 
         prefix = start_prefix.lstrip(DELIMITER)
+        await self._settle_versions(prefix)  # each listing: versioning can change
         pool = Pool(self, prefix, LIST_PROCESSES) if LIST_PROCESSES else None
         await RangeListing(self, prefix, result_queue, pool).run()
 
@@ -710,6 +714,7 @@ class RangeListedClient(Client):
         ranges: nothing below the level is listed. No child processes: a level
         has few rows to parse."""
         prefix = start_prefix.lstrip(DELIMITER)
+        await self._settle_versions(prefix)
         await RangeListing(self, prefix, result_queue, None, DELIMITER).run()
 
     async def has_keys(self, prefix: str) -> bool:

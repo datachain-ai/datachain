@@ -516,7 +516,6 @@ import asyncio
 
 from datachain.client.fsspec import RangeListedClient
 from datachain.client.ranges import Page
-from datachain.lib.file import FileRow
 
 
 class IdleClient(RangeListedClient):
@@ -530,12 +529,6 @@ class IdleClient(RangeListedClient):
 
     async def _list_page(self, prefix, start_after, token, hi=None, page_size=None):
         return Page([], None, None, None)
-
-
-class ModeClient(IdleClient):
-    async def _list_page(self, prefix, start_after, token, hi=None, page_size=None):
-        version = str(self._unversioned)
-        return Page([FileRow("fake://bucket", "k", 1, version)], "k", "k", None)
 
 
 class WarmingIdleClient(IdleClient):
@@ -695,6 +688,11 @@ def test_child_reports_why_it_cannot_list():
     assert "PermissionError: no list access" in error
 
 
+def spec(cls, name="bucket"):
+    """What a parent sends a child first: a client to rebuild, and the listing."""
+    return (cls, name, {}, None, 4, "", None, None)
+
+
 def child(stdin: bytes, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(  # noqa: S603
         _command(),
@@ -745,7 +743,7 @@ def test_s3_connections_cover_the_listing_requests_in_flight():
 def test_child_reports_its_warm_up_error_to_the_parent(tmp_path):
     from datachain.client.local import FileClient
 
-    out = child(dump((FileClient, str(tmp_path), {}, None, 4, "", None, None)))
+    out = child(dump(spec(FileClient, str(tmp_path))))
 
     assert out.returncode == 0
     assert "Traceback" in load(io.BytesIO(out.stdout))
@@ -890,18 +888,14 @@ def test_a_ctypes_module_in_the_cwd_does_not_run_in_a_child(tmp_path, clients):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / "ctypes.py").write_text("raise SystemExit(3)")
-    out = child(
-        dump((clients.IdleClient, "bucket", {}, None, 4, "", None, None)), cwd=cwd
-    )
+    out = child(dump(spec(clients.IdleClient)), cwd=cwd)
 
     assert out.returncode == 0
     assert load(io.BytesIO(out.stdout)) is None  # ready
 
 
 def test_child_reports_why_it_cannot_build_its_client():
-    out = child(
-        dump((int, "bucket", {}, None, 4, "", None, None))
-    )  # int() takes no 3 args
+    out = child(dump(spec(int)))  # int() takes no 3 args
 
     assert out.returncode == 0
     assert "TypeError" in load(io.BytesIO(out.stdout))
@@ -909,7 +903,6 @@ def test_child_reports_why_it_cannot_build_its_client():
 
 
 def test_child_ends_when_the_parent_goes_while_a_thread_is_stuck(clients):
-    spec = (clients.ThreadIdleClient, "bucket", {}, None, 4, "", None, None)
     proc = subprocess.Popen(  # noqa: S603
         _command(),
         stdin=subprocess.PIPE,
@@ -918,7 +911,7 @@ def test_child_ends_when_the_parent_goes_while_a_thread_is_stuck(clients):
     )
     assert proc.stdin
     assert proc.stdout
-    proc.stdin.write(dump(spec))
+    proc.stdin.write(dump(spec(clients.ThreadIdleClient)))
     proc.stdin.flush()
     time.sleep(1)  # the warm-up's thread sleeps
     proc.stdin.close()  # the parent is gone
@@ -966,28 +959,10 @@ def test_children_die_when_the_parent_exits_with_the_listing_open(clients):
     assert not _alive_after(pids, 20)
 
 
-def test_a_child_builds_the_parents_client_in_its_listing_mode(clients):
-    parent = clients.ModeClient("bucket", {}, None)
-    child, prefix = _child_client((*Pool(parent, "dir/", 1).spec, True))
+def test_a_child_rebuilds_the_parents_client_in_its_listing_mode(clients):
+    parent = clients.IdleClient("bucket", {}, None)
+    parent._unversioned = True
+    rebuilt, prefix = _child_client(load(io.BytesIO(Pool(parent, "dir/", 1).spec)))
 
-    assert type(child) is type(parent)
-    assert (child.name, child._unversioned, prefix) == ("bucket", True, "dir/")
-
-
-def test_children_list_in_the_mode_the_parents_first_page_set(clients):
-    async def check():
-        client = clients.ModeClient("bucket", {}, None)
-        pool = Pool(client, "", 1)
-        client._unversioned = True  # the first page fell back to current objects
-        pool.start()
-        try:
-            while not pool.children:  # noqa: ASYNC110
-                await asyncio.sleep(0.05)
-            return await pool.list_page("", None, None)
-        finally:
-            pool.close()
-            await pool.wait_closed()
-
-    page = sync(get_loop(), lambda: asyncio.wait_for(check(), 60))
-
-    assert [r.version for r in page.rows] == ["True"]
+    assert type(rebuilt) is type(parent)
+    assert (rebuilt.name, rebuilt._unversioned, prefix) == ("bucket", True, "dir/")
