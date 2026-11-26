@@ -639,6 +639,17 @@ class UDFStep(Step, ABC):
         to select
         """
 
+    def _workers_and_processes(
+        self, catalog: "Catalog", rows_total: int
+    ) -> tuple[bool | int, bool | int]:
+        workers = determine_workers(self.workers, rows_total=rows_total)
+        processes = determine_processes(self.parallel, rows_total=rows_total)
+        if catalog.in_memory:
+            # Defaults from the environment don't apply in memory.
+            workers = workers if self.workers else False
+            processes = processes if self.parallel is not None else False
+        return workers, processes
+
     def populate_udf_output_table(  # noqa: PLR0915
         self,
         udf_table: "Table",
@@ -672,12 +683,7 @@ class UDFStep(Step, ABC):
             get_udf_distributor_class,
         )
 
-        workers = determine_workers(self.workers, rows_total=rows_to_process)
-        processes = determine_processes(self.parallel, rows_total=rows_to_process)
-        # Worker and process defaults from the environment don't apply in memory.
-        in_memory = catalog.in_memory
-        workers = workers if self.workers or not in_memory else False
-        processes = processes if self.parallel is not None or not in_memory else False
+        workers, processes = self._workers_and_processes(catalog, rows_to_process)
         logger.debug(
             "UDF(%s): Processing %d rows (workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
