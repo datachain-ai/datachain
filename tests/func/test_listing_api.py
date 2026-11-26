@@ -598,3 +598,54 @@ def test_dataset_copy_config_override_keeps_parent_cleanup(configured_listing_so
         client_config={"use_symlinks": True},
     )
     assert dc.read_dataset("copy", session=parent).to_values("file.path") == ["a.txt"]
+
+
+@pytest.mark.parametrize("protocol", ["s3", "gs"])
+def test_saved_listing_reconciles_latest_version_at_page_boundary(
+    test_session, monkeypatch, mocker, protocol
+):
+    from datachain.client import listing_worker
+    from datachain.client.gcs import GCSClient
+    from datachain.client.ranges import Keep, Page
+    from datachain.client.s3 import ClientS3
+
+    monkeypatch.setenv("DATACHAIN_RANGE_LISTING", "0")
+    monkeypatch.setattr(listing_worker, "LIST_PROCESSES", 1)
+    make_pool = mocker.spy(listing_worker.Pool, "__init__")
+    uri = f"{protocol}://bucket/"
+    old, new = ("2", "1") if protocol == "s3" else ("1", "2")
+    pages = [
+        [FileRow(uri.rstrip("/"), "k", 1, old)],
+        [FileRow(uri.rstrip("/"), "k", 1, new)],
+    ]
+    client_cls = ClientS3 if protocol == "s3" else GCSClient
+
+    async def list_page(self, prefix, start_after, token, hi=None, **kwargs):
+        index = token or 0
+        rows = pages[index]
+        keep = Keep(self, start_after, hi)
+        return Page(
+            [r for r in rows if keep(r.path)],
+            rows[0].path,
+            rows[-1].path,
+            index + 1 if index + 1 < len(pages) else None,
+            keep.past_lo,
+            keep.past_hi,
+            keep.in_order,
+        )
+
+    monkeypatch.setattr(client_cls, "_list_page", list_page)
+    config = {"anon": True} if protocol == "s3" else {"token": "anon"}
+    chain = dc.read_storage(
+        uri, versions=True, client_config=config, session=test_session
+    )
+
+    files = chain.to_values("file")
+    assert [(f.path, f.version, f.is_latest) for f in files] == [("k", new, True)]
+    stored = _read_listing(test_session, uri, True)
+    assert sorted((f.path, f.version, f.is_latest) for f in stored) == sorted(
+        [("k", old, False), ("k", new, True)]
+    )
+
+    assert make_pool.call_count
+    assert all(call.kwargs["raw"] for call in make_pool.call_args_list)

@@ -3,13 +3,15 @@ import itertools
 import logging
 import math
 import unicodedata
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from datachain.progress import tqdm
 from datachain.utils import getenv_bool
 
 if TYPE_CHECKING:
+    from datachain.lib.file import FileRow
+
     from .fsspec import RangeListedClient, ResultQueue
     from .listing_worker import Pool
 
@@ -164,6 +166,34 @@ def split_points(
     return points
 
 
+class _LatestVersion:
+    def __init__(self, order: Callable[[str], Any]) -> None:
+        self.order = order
+        self.pending: FileRow | None = None
+
+    def advance(
+        self, rows: Sequence["FileRow"], page: Page, token: Any
+    ) -> list["FileRow"]:
+        rows = list(rows)
+        if (pending := self.pending) is not None:
+            superseded = any(r.path == pending.path and r.is_latest for r in rows)
+            past_key = page.last is not None and self.order(page.last) > self.order(
+                pending.path
+            )
+            if superseded or past_key or token is None:
+                rows.insert(
+                    0, pending._replace(is_latest=False) if superseded else pending
+                )
+                self.pending = None
+        if token is not None:
+            # Only the latest row waits; history can span arbitrarily many pages.
+            for i in range(len(rows) - 1, -1, -1):
+                if rows[i].path == page.last and rows[i].is_latest:
+                    self.pending = rows.pop(i)
+                    break
+        return rows
+
+
 class RangeListing:
     """One listing of a prefix as key ranges ``(lo, hi]`` read in parallel.
 
@@ -305,15 +335,27 @@ class RangeListing:
         this one waits for room in the result queue. Empty pages still go in
         the queue so the reader's reservation heartbeat advances per page."""
         page = await self._fetch(key_range, None)
+        latest = (
+            _LatestVersion(self.order)
+            if self.client._is_version_aware() and self.client._lists_in_key_order()
+            else None
+        )
         next_page: asyncio.Task | None = None
         try:
             while True:
+                in_order = page.in_order and (
+                    page.first is None or self.order(page.first) >= key_range.read_to
+                )
                 rows, token = self._advance(key_range, page)
                 first_page = not key_range.lo and key_range.age == 1
                 if first_page and token is not None and self._may_split():
                     await self._cut(key_range, page)
                 if token is not None:
                     next_page = asyncio.create_task(self._fetch(key_range, token))
+                if latest is not None:
+                    rows = latest.advance(rows, page, token if in_order else None)
+                    if not in_order:
+                        latest = None
                 await self.result_queue.put(rows)
                 if rows:
                     self.pbar.update(len(rows))

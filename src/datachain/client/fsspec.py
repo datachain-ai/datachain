@@ -699,7 +699,12 @@ class RangeListedClient(Client):
         from .listing_worker import LIST_PROCESSES, Pool
 
         prefix = start_prefix.lstrip(DELIMITER)
-        pool = Pool(self, prefix, LIST_PROCESSES) if LIST_PROCESSES else None
+        # Latest flags cross page boundaries; versioned rows are encoded afterwards.
+        pool = (
+            Pool(self, prefix, LIST_PROCESSES, raw=self._is_version_aware())
+            if LIST_PROCESSES
+            else None
+        )
         await RangeListing(self, prefix, result_queue, pool).run()
 
     async def _fetch_level(self, start_prefix: str, result_queue: ResultQueue) -> None:
