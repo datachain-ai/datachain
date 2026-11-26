@@ -176,23 +176,34 @@ with dc.Session("last", in_memory=True):
 """
 
 
-@pytest.mark.parametrize(
-    ("end", "status"),
-    [("pass", JobStatus.COMPLETE), ("raise KeyboardInterrupt", JobStatus.CANCELED)],
-    ids=["normal", "ctrl-c"],
-)
-def test_script_exit_after_in_memory_sessions_finalizes_its_job_cleanly(
-    tmp_path, catalog_tmpfile, end, status
-):
+def _run_script_with_in_memory_sessions(tmp_path, catalog, end):
     script = tmp_path / "script.py"
     script.write_text(SCRIPT_WITH_IN_MEMORY_SESSIONS.format(end=end))
-    env = e2e_subprocess_env(catalog_tmpfile)
+    env = e2e_subprocess_env(catalog)
     env.pop("DATACHAIN_JOB_ID", None)
 
     process = run_test_subprocess([sys.executable, str(script)], env)
     _, _, stderr = wait_for_test_subprocess(process)
+    return catalog.metastore.get_last_job_by_name(str(script)), stderr
+
+
+def test_script_end_after_in_memory_sessions_completes_its_job(
+    tmp_path, catalog_tmpfile
+):
+    job, stderr = _run_script_with_in_memory_sessions(tmp_path, catalog_tmpfile, "pass")
 
     assert "Exception ignored" not in stderr
-    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
     assert job is not None, stderr
-    assert job.status == status, stderr
+    assert job.status == JobStatus.COMPLETE, stderr
+
+
+def test_script_ctrl_c_after_in_memory_sessions_cancels_its_job(
+    tmp_path, catalog_tmpfile
+):
+    job, stderr = _run_script_with_in_memory_sessions(
+        tmp_path, catalog_tmpfile, "raise KeyboardInterrupt"
+    )
+
+    assert "Exception ignored" not in stderr
+    assert job is not None, stderr
+    assert job.status == JobStatus.CANCELED, stderr

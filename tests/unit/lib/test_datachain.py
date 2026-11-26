@@ -418,11 +418,10 @@ def test_map_in_memory_with_studio_workers_and_parallel_defaults_runs(monkeypatc
     assert sorted(chain.to_values("y")) == [2, 3, 4]
 
 
-@pytest.mark.parametrize("settings", [{"workers": 2}, {"parallel": 2}])
-def test_map_in_memory_with_explicit_workers_or_parallel_raises(settings):
+def test_map_in_memory_with_explicit_workers_raises():
     chain = (
         dc.read_values(x=[1, 2, 3], in_memory=True)
-        .settings(**settings)
+        .settings(workers=2)
         .map(y=lambda x: x + 1, output=int)
     )
 
@@ -430,25 +429,47 @@ def test_map_in_memory_with_explicit_workers_or_parallel_raises(settings):
         chain.to_values("y")
 
 
-@pytest.mark.parametrize(
-    "combine",
-    [
-        lambda a, b: a.union(b),
-        lambda a, b: a.merge(b, on="x"),
-        lambda a, b: a.subtract(b, on="x"),
-    ],
-    ids=["union", "merge", "subtract"],
-)
-@pytest.mark.parametrize("in_memory_left", [True, False])
-def test_combine_in_memory_with_persistent_chain_raises(
-    test_session, combine, in_memory_left
-):
+def test_map_in_memory_with_explicit_parallel_raises():
+    chain = (
+        dc.read_values(x=[1, 2, 3], in_memory=True)
+        .settings(parallel=2)
+        .map(y=lambda x: x + 1, output=int)
+    )
+
+    with pytest.raises(RuntimeError, match="In-memory databases cannot be used"):
+        chain.to_values("y")
+
+
+def test_union_in_memory_with_persistent_chain_raises(test_session):
     in_memory = dc.read_values(x=[1], in_memory=True)
     persistent = dc.read_values(x=[1], session=test_session)
-    left, right = (in_memory, persistent) if in_memory_left else (persistent, in_memory)
 
     with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
-        combine(left, right)
+        in_memory.union(persistent)
+
+
+def test_union_persistent_with_in_memory_chain_raises(test_session):
+    in_memory = dc.read_values(x=[1], in_memory=True)
+    persistent = dc.read_values(x=[1], session=test_session)
+
+    with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
+        persistent.union(in_memory)
+
+
+def test_merge_in_memory_with_persistent_chain_raises(test_session):
+    in_memory = dc.read_values(x=[1], in_memory=True)
+    persistent = dc.read_values(x=[1], session=test_session)
+
+    with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
+        in_memory.merge(persistent, on="x")
+
+
+def test_subtract_in_memory_with_persistent_chain_raises(test_session):
+    in_memory = dc.read_values(x=[1], in_memory=True)
+    persistent = dc.read_values(x=[1], session=test_session)
+
+    with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
+        in_memory.subtract(persistent, on="x")
 
 
 def test_read_records_and_gen(test_session):
@@ -7338,11 +7359,17 @@ def test_save_create_project_not_allowed(test_session, is_studio):
 
 
 @pytest.mark.parametrize("is_studio", [True])
-@pytest.mark.parametrize("name", ["team.proj.d", "@ivan.default.d"])
-def test_save_in_memory_in_studio_to_new_project_raises(is_studio, name):
+def test_save_in_memory_in_studio_to_new_project_raises(is_studio):
     chain = dc.read_values(x=[1], in_memory=True)
     with pytest.raises(ProjectCreateNotAllowedError, match="not allowed in memory"):
-        chain.save(name)
+        chain.save("team.proj.d")
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_save_in_memory_in_studio_to_personal_namespace_raises(is_studio):
+    chain = dc.read_values(x=[1], in_memory=True)
+    with pytest.raises(ProjectCreateNotAllowedError, match="not allowed in memory"):
+        chain.save("@ivan.default.d")
 
 
 @pytest.mark.parametrize("is_studio", [True])

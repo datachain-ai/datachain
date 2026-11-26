@@ -182,13 +182,14 @@ def test_get_inside_in_memory_session_stays_in_memory():
     assert active not in Session.SESSION_CONTEXTS
 
 
-@pytest.mark.parametrize("read", ["read_values", "read_storage"])
-def test_read_in_memory_with_persistent_session_raises(test_session, tmp_dir, read):
+def test_read_values_in_memory_with_persistent_session_raises(test_session):
     with pytest.raises(ValueError, match="can't be used with the persistent session"):
-        if read == "read_values":
-            dc.read_values(x=[1], session=test_session, in_memory=True)
-        else:
-            dc.read_storage(tmp_dir.as_uri(), session=test_session, in_memory=True)
+        dc.read_values(x=[1], session=test_session, in_memory=True)
+
+
+def test_read_storage_in_memory_with_persistent_session_raises(test_session, tmp_dir):
+    with pytest.raises(ValueError, match="can't be used with the persistent session"):
+        dc.read_storage(tmp_dir.as_uri(), session=test_session, in_memory=True)
 
 
 def test_read_in_memory_with_in_memory_session_uses_it():
