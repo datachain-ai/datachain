@@ -538,18 +538,24 @@ def test_list_page_lists_versions_only_where_the_bucket_may_hold_them(
     assert s3.list_objects_v2.call_count == 2 * (not lists_versions)
 
 
-def test_a_denied_check_fails_on_other_version_listing_errors():
+@pytest.mark.parametrize(
+    "check, probe",
+    [("InternalError", None), ("AccessDenied", "NoSuchBucket")],
+    ids=["check-fails", "check-denied-probe-fails"],
+)
+def test_a_versions_check_raises_errors_other_than_denials(check, probe):
     s3 = MagicMock(
         get_bucket_versioning=AsyncMock(
-            side_effect=_error("AccessDenied", "GetBucketVersioning")
+            side_effect=_error(check, "GetBucketVersioning")
         ),
-        list_object_versions=AsyncMock(side_effect=_error("NoSuchBucket")),
+        list_object_versions=AsyncMock(side_effect=_error(probe or "Unexpected")),
         list_objects_v2=AsyncMock(return_value={}),
     )
     client = _listing_client(True, s3)
 
-    with pytest.raises(ClientError, match="NoSuchBucket"):
+    with pytest.raises(ClientError, match=probe or check):
         sync(get_loop(), client._list_page, "", "", None)
+    assert s3.list_object_versions.call_count == int(probe is not None)
     assert not s3.list_objects_v2.called
 
 

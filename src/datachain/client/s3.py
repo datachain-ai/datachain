@@ -109,6 +109,10 @@ def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
     return meta["HTTPStatusCode"], headers.get("x-amz-bucket-region")
 
 
+def _denied_or_unsupported(e: ClientError) -> bool:
+    return e.response.get("Error", {}).get("Code") in ("AccessDenied", "NotImplemented")
+
+
 def _parse_timestamp(value: Any) -> datetime:
     try:
         return datetime.fromisoformat(value)
@@ -571,15 +575,16 @@ class ClientS3(RangeListedClient):
             unversioned = not self._lists_in_key_order() or (
                 "Status" not in await s3.get_bucket_versioning(Bucket=self.name)
             )
-        except ClientError:  # such as denied: a version listing tells
-            try:
+        except ClientError as e:
+            if not _denied_or_unsupported(e):  # a failing store tells nothing
+                raise
+            try:  # a version listing tells
                 await s3.list_object_versions(
                     Bucket=self.name, Prefix=prefix, MaxKeys=1, **self.fs.req_kw
                 )
                 unversioned = False
-            except ClientError as e:
-                code = e.response.get("Error", {}).get("Code")
-                if code not in ("NotImplemented", "AccessDenied"):
+            except ClientError as err:
+                if not _denied_or_unsupported(err):
                     raise
                 # stores without version support hold only current objects; a
                 # caller denied listing versions can list only those
