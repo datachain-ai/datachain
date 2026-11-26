@@ -90,5 +90,7 @@ C("file.size") // 1024
 ::: datachain.lib.utils.DataChainError
 
 ::: datachain.query.session.Session
+    options:
+      filters: ["!^_[^_]", "!^get$"]
 
 ::: datachain.lib.dc.Sys

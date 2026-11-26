@@ -5,7 +5,7 @@ from weakref import ref
 import pytest
 
 import datachain as dc
-from datachain.catalog import Catalog
+from datachain.catalog import Catalog, get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError, TableMissingError
@@ -163,23 +163,57 @@ def test_get_in_memory_returns_one_shared_session_apart_from_default(tmp_dir):
     assert not default.catalog.in_memory
     assert Session.get(in_memory=True) is session
 
-    view = Session.get(in_memory=True, client_config={"anon": True})
-    assert view.catalog.in_memory
-    assert view.catalog.client_config == {"anon": True}
-    assert Session.get() is default
-
-    with session:
-        pass
-    reopened = Session.get(in_memory=True)
-    assert reopened is not session
-    assert dc.read_values(x=[1], session=reopened).to_values("x") == [1]
-
 
 def test_get_inside_in_memory_session_stays_in_memory():
     with Session("mem", in_memory=True) as active:
         assert Session.get(in_memory=True) is active
-        assert Session.get(client_config={"anon": True}).catalog.in_memory
     assert active not in Session.SESSION_CONTEXTS
+
+
+def test_enter_global_session_raises_and_keeps_its_data(tmp_dir):
+    chain = dc.read_values(x=[1, 2])
+
+    with pytest.raises(RuntimeError, match="Cannot enter"), chain.session:
+        pass
+
+    assert chain.to_values("x") == [1, 2]
+
+
+def test_enter_shared_in_memory_session_raises_and_keeps_its_data(tmp_dir):
+    chain = dc.read_values(x=[1, 2], in_memory=True)
+
+    with pytest.raises(RuntimeError, match="Cannot enter"), chain.session:
+        pass
+
+    assert chain.to_values("x") == [1, 2]
+
+
+def test_enter_active_session_again_raises_and_keeps_its_data(catalog):
+    with Session("p", catalog=catalog) as active:
+        chain = dc.read_values(x=[1, 2], session=active)
+
+        with pytest.raises(RuntimeError, match="Cannot enter"), active:
+            pass
+
+        assert Session.active() is active
+        assert chain.to_values("x") == [1, 2]
+
+
+def test_default_session_after_in_memory_catalog_session_stays_persistent(tmp_dir):
+    with get_catalog(in_memory=True) as scratch:
+        dc.read_values(x=[1], session=scratch.session).save("scratch")
+
+        assert scratch.get_dataset("scratch")
+        assert not dc.read_values(x=[2]).session.catalog.in_memory
+
+
+def test_job_of_new_in_memory_catalog_is_its_own(tmp_dir):
+    dc.read_values(x=[0]).count()
+    with get_catalog(in_memory=True) as first:
+        job = first.session.get_or_create_job()
+        with get_catalog(in_memory=True) as second:
+            assert second.session.get_job() is None
+        assert first.session.get_job() is job
 
 
 def test_read_values_in_memory_with_persistent_session_raises(test_session):
@@ -319,7 +353,7 @@ def test_catalog_view_cannot_exit_parent_scope(catalog):
     with Session("owner", catalog=catalog) as parent:
         chain = dc.read_values(value=[1], session=parent).persist()
         view = parent._with_catalog(catalog.copy())
-        with pytest.raises(RuntimeError, match="parent Session"):
+        with pytest.raises(RuntimeError, match="Cannot enter a view"):
             with view:
                 pass
         assert Session.get() is parent

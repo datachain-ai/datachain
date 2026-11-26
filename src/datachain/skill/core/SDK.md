@@ -201,7 +201,7 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
     **Anon does NOT propagate across `.save()` boundaries.** A downstream UDF
     that calls `file.open()` in a new process makes a fresh HeadObject without
     anon → 403. Fix: pass anon into the downstream session via `client_config`:
-    ✓ session = dc.Session.get(client_config={"anon": True})
+    ✓ session = dc.Session("anon", client_config={"anon": True})
       (dc.read_dataset("my_bucket_files", session=session)
          .map(emb=encode_image)
          .save("my_bucket_emb"))

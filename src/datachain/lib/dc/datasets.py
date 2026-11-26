@@ -151,7 +151,7 @@ def read_dataset(
         ```
 
         ```py
-        session = Session.get(client_config={"aws_endpoint_url": "<minio-url>"})
+        session = dc.Session("minio", client_config={"aws_endpoint_url": "<minio-url>"})
         settings = {
             "cache": True,
             "parallel": 4,

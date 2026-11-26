@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from copy import copy
 from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
-from weakref import WeakSet
+from weakref import WeakKeyDictionary, WeakSet
 
 from datachain.catalog import get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
@@ -18,6 +18,7 @@ from datachain.error import DataChainError, JobNotFoundError, TableMissingError
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
+    from datachain.data_storage import AbstractMetastore
     from datachain.job import Job
 
 logger = logging.getLogger("datachain")
@@ -63,6 +64,10 @@ class Session:
     IN_MEMORY_SESSION: "Session | None" = None
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
     _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
+    # The job of an in-memory catalog lives in that catalog's database.
+    _IN_MEMORY_JOBS: ClassVar["WeakKeyDictionary[AbstractMetastore, Job]"] = (
+        WeakKeyDictionary()
+    )
     ORIGINAL_EXCEPT_HOOK = None
 
     # Job management - class-level to ensure one job per process
@@ -99,8 +104,6 @@ class Session:
             client_config=client_config, in_memory=in_memory
         )
         self._cleanup_catalogs: list[Catalog] = [self.catalog]
-        # The job of an in-memory catalog lives in that catalog.
-        self._session_job: Job | None = None
         Session._ALL_SESSIONS.add(self)
 
     def _with_catalog(self, catalog: "Catalog") -> "Session":
@@ -117,8 +120,17 @@ class Session:
         return view
 
     def __enter__(self):
-        if self._parent is not None:
-            raise RuntimeError("Enter the parent Session, not its catalog view")
+        if (
+            self._parent is not None
+            or self is Session.GLOBAL_SESSION_CTX
+            or self is Session.IN_MEMORY_SESSION
+            or self in Session.SESSION_CONTEXTS
+        ):
+            # Exiting closes the session, so enter only one this code owns.
+            raise RuntimeError(
+                "Cannot enter a view, the global or shared in-memory session, or "
+                "a session already entered; open one with `with dc.Session(name)`"
+            )
         # Push the current context onto the stack
         Session.SESSION_CONTEXTS.append(self)
 
@@ -152,7 +164,7 @@ class Session:
         Returns None if no job is found. An in-memory catalog has a job of its own.
         """
         if self.catalog.in_memory:
-            return (self._parent or self)._session_job
+            return Session._IN_MEMORY_JOBS.get(self.catalog.metastore)
 
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
@@ -188,13 +200,14 @@ class Session:
             An in-memory catalog has a job of its own, in that catalog.
         """
         if self.catalog.in_memory:
-            owner = self._parent or self
-            if owner._session_job is None:
-                metastore = self.catalog.metastore
+            metastore = self.catalog.metastore
+            job = Session._IN_MEMORY_JOBS.get(metastore)
+            if job is None:
                 job_id = metastore.create_job("in-memory", "", status=JobStatus.RUNNING)
-                owner._session_job = metastore.get_job(job_id)
-            assert owner._session_job is not None
-            return owner._session_job
+                job = metastore.get_job(job_id)
+                assert job is not None
+                Session._IN_MEMORY_JOBS[metastore] = job
+            return job
 
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
@@ -372,15 +385,16 @@ class Session:
         cls,
         session: "Session | None" = None,
         catalog: "Catalog | None" = None,
-        client_config: dict | None = None,
         in_memory: bool = False,
     ) -> "Session":
-        """Creates a Session() object from a catalog.
+        """The session a call without `session=` uses. Internal: to open a session,
+        or to read with another `client_config`, use `dc.Session(name, ...)`.
 
         Parameters:
-            session (Session): Optional Session(). If not provided a new session will
-                    be created. It's needed mostly for simple API purposes.
-            catalog (Catalog): Optional catalog. By default, a new catalog is created.
+            session (Session): Returned as is when given.
+            catalog (Catalog): The catalog of the global session, if this call
+                    creates it and the catalog isn't in memory. By default, the
+                    catalog the environment configures.
             in_memory (bool): The active session if it is in memory, else one
                     in-memory session shared by the process. Raises ValueError
                     with a persistent `session`.
@@ -405,11 +419,10 @@ class Session:
             session = cls.SESSION_CONTEXTS[-1]
 
         elif cls.GLOBAL_SESSION_CTX is None:
-            cls.GLOBAL_SESSION_CTX = Session(
-                cls.GLOBAL_SESSION_NAME,
-                catalog,
-                client_config=client_config,
-            )
+            # The global session is never in memory.
+            if catalog is not None and catalog.in_memory:
+                catalog = None
+            cls.GLOBAL_SESSION_CTX = Session(cls.GLOBAL_SESSION_NAME, catalog)
             session = cls.GLOBAL_SESSION_CTX
 
             atexit.register(cls._global_cleanup)
@@ -417,18 +430,6 @@ class Session:
             sys.excepthook = cls.except_hook
         else:
             session = cls.GLOBAL_SESSION_CTX
-
-        if client_config and session.catalog.client_config != client_config:
-            if session.catalog.in_memory:
-                # A view: an in-memory session never becomes the active session.
-                view_catalog = session.catalog.copy()
-                view_catalog.client_config = client_config
-                view_catalog.source_client_configs = {}
-                return session._with_catalog(view_catalog)
-            session = Session(
-                "session" + uuid4().hex[:4], catalog, client_config=client_config
-            )
-            session.__enter__()
 
         return session
 
@@ -465,6 +466,7 @@ class Session:
         cls._close_all_contexts()
         if cls.IN_MEMORY_SESSION is not None:
             cls.IN_MEMORY_SESSION._close()
+        cls._IN_MEMORY_JOBS.clear()
         if cls.GLOBAL_SESSION_CTX is not None:
             cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
             cls.GLOBAL_SESSION_CTX = None
