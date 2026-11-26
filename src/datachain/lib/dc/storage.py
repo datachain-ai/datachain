@@ -61,11 +61,12 @@ def read_storage(
         uri: Storage path(s) or URI(s). Can be a local path or start with a
             storage prefix like `s3://`, `gs://`, `az://`, `hf://` or "file:///".
             Supports glob patterns:
-              - `*` : wildcard
-              - `**` : recursive wildcard
-              - `?` : single character
-              - `{a,b}` : brace expansion list
-              - `{1..9}` : brace numeric or alphabetic range
+              - `*` : any characters in one file or folder name
+              - `?` : one character in a name
+              - `[abc]`, `[a-z]`, `[^a]` : one character of a set
+              - `**` : any number of folders, none too: `dir/**/*.jpg`
+              - `{a,b}` : alternatives
+              - `{1..9}`, `{01..10}`, `{a..z}` : ranges
         type: read file as "binary", "text", or "image" data. Default is "binary".
         recursive: search recursively for the given path.
         update: list the storage again instead of reusing a saved listing.
@@ -197,7 +198,7 @@ def _read_storage(
     file_values = []
     prepared_listings: set[str] = set()
 
-    for list_uri_to_use, glob_pattern in storage_sources(uris):
+    for list_uri_to_use, patterns in storage_sources(uris, recursive):
         dc, list_uri, list_path = _prepare_listing(
             list_uri_to_use,
             session,
@@ -224,9 +225,7 @@ def _read_storage(
             continue
 
         chains.append(
-            listing_lib.select_paths(
-                dc, path_filter(list_path, glob_pattern, recursive)
-            )
+            listing_lib.select_paths(dc, path_filter(list_path, patterns, recursive))
         )
 
     storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
@@ -421,9 +420,9 @@ class Listing:
         scans: dict[str, dict[ListScope | None, list[listing_lib.PathFilter]]] = {}
         objects: list[_Object | _Scan] = []
         described: dict[str, tuple[str, str, str] | None] = {}
-        for uri, pattern in storage_sources(self.uris):
+        for uri, patterns in storage_sources(self.uris, self.recursive):
             client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
-            if uri not in described:  # braces expand to URIs with one base
+            if uri not in described:  # URIs and braces can share a base
                 described[uri] = listing_lib.describe_listing(
                     client, uri, self.versions
                 )
@@ -436,11 +435,11 @@ class Listing:
             whole = list_path == Client.parse_url(list_uri)[1]
             paths = (
                 listing_lib.PathFilter()
-                if pattern is None and self.recursive and whole
-                else path_filter(list_path, pattern, self.recursive)
+                if not patterns and self.recursive and whole
+                else path_filter(list_path, patterns, self.recursive)
             )
             scope = (
-                list_scope(list_path, pattern, self.recursive)
+                list_scope(list_path, patterns, self.recursive)
                 if isinstance(client, RangeListedClient)
                 else None
             )
