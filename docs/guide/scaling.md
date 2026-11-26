@@ -25,7 +25,7 @@ chain = (
 
 `settings(workers=K)` spreads work across K machines via Studio's BYOC model (10-300 machine Kubernetes clusters). Processes and workers compose: `parallel=8, workers=50` means 8 processes on each of 50 machines.
 
-`workers` is the number of machines an operation asks for, not an upper limit: when the job already has more workers running, the operation uses all of them.
+`workers` is the number of machines an operation asks for, not an upper limit: when the job already has more workers running, the operation uses all of them. The exception is `workers=1`, which always runs on one machine.
 
 ```python
 import datachain as dc
