@@ -182,6 +182,22 @@ def test_get_inside_in_memory_session_stays_in_memory():
     assert active not in Session.SESSION_CONTEXTS
 
 
+@pytest.mark.parametrize("read", ["read_values", "read_storage"])
+def test_read_in_memory_with_persistent_session_raises(test_session, tmp_dir, read):
+    with pytest.raises(ValueError, match="in_memory=True with a persistent session"):
+        if read == "read_values":
+            dc.read_values(x=[1], session=test_session, in_memory=True)
+        else:
+            dc.read_storage(tmp_dir.as_uri(), session=test_session, in_memory=True)
+
+
+def test_read_in_memory_with_in_memory_session_uses_it():
+    with Session("mem", in_memory=True) as mem:
+        chain = dc.read_values(x=[1], session=mem, in_memory=True)
+        assert chain.to_values("x") == [1]
+        assert chain.session.catalog is mem.catalog
+
+
 def test_in_memory_chain_in_studio_job_writes_nothing_to_job_catalog(
     catalog_tmpfile, tmp_path, monkeypatch
 ):

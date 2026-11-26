@@ -382,9 +382,15 @@ class Session:
                     be created. It's needed mostly for simple API purposes.
             catalog (Catalog): Optional catalog. By default, a new catalog is created.
             in_memory (bool): The active session if it is in memory, else one
-                    in-memory session shared by the process.
+                    in-memory session shared by the process. Raises ValueError
+                    with a persistent `session`.
         """
         if session:
+            if in_memory and not session.catalog.in_memory:
+                raise ValueError(
+                    "Cannot use in_memory=True with a persistent session; "
+                    "drop session= or pass an in-memory one"
+                )
             return session
 
         active = cls.active()
