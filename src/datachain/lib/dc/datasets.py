@@ -556,6 +556,6 @@ def move_dataset(
         project_id=catalog.metastore.get_project(
             dest_project,
             dest_namespace,
-            create=is_studio(),
+            create=is_studio() and not catalog.in_memory,
         ).id,
     )

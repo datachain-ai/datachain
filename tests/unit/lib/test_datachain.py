@@ -34,6 +34,7 @@ from datachain.error import (
     InvalidNamespaceNameError,
     InvalidProjectNameError,
     ProjectCreateNotAllowedError,
+    ProjectNotFoundError,
 )
 from datachain.func import string
 from datachain.lib.arrow import ArrowRow
@@ -7334,6 +7335,21 @@ def test_save_create_project_not_allowed(test_session, is_studio):
         dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session).save(
             "dev.numbers.fibonacci"
         )
+
+
+@pytest.mark.parametrize("is_studio", [True])
+@pytest.mark.parametrize("name", ["team.proj.d", "@ivan.default.d"])
+def test_save_in_memory_in_studio_to_new_project_raises(is_studio, name):
+    chain = dc.read_values(x=[1], in_memory=True)
+    with pytest.raises(ProjectCreateNotAllowedError, match="not allowed in memory"):
+        chain.save(name)
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_move_dataset_in_memory_in_studio_to_new_project_raises(is_studio):
+    dc.read_values(x=[1], in_memory=True).save("d")
+    with pytest.raises(ProjectNotFoundError):
+        dc.move_dataset("d", "team.proj.d", in_memory=True)
 
 
 def test_save_regenerates_sys_ids_with_order_by(test_session):
