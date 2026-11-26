@@ -184,7 +184,7 @@ def test_get_inside_in_memory_session_stays_in_memory():
 
 @pytest.mark.parametrize("read", ["read_values", "read_storage"])
 def test_read_in_memory_with_persistent_session_raises(test_session, tmp_dir, read):
-    with pytest.raises(ValueError, match="in_memory=True with a persistent session"):
+    with pytest.raises(ValueError, match="can't be used with the persistent session"):
         if read == "read_values":
             dc.read_values(x=[1], session=test_session, in_memory=True)
         else:

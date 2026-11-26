@@ -283,7 +283,7 @@ def list_storage(
             endpoint. Replaces the session's.
         session: The session to take the client configuration from and to
             save into with `save()`.
-        in_memory: Make the session that `save()` creates, if any, in memory.
+        in_memory: If True, `save()` stores the listing in memory.
 
     Returns:
         Listing: The files of `uri`.

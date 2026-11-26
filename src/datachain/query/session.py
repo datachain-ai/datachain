@@ -388,8 +388,9 @@ class Session:
         if session:
             if in_memory and not session.catalog.in_memory:
                 raise ValueError(
-                    "Cannot use in_memory=True with a persistent session; "
-                    "drop session= or pass an in-memory one"
+                    "in_memory=True can't be used with the persistent session "
+                    f"{session.name!r}. Drop session=, or pass an in-memory "
+                    "session: dc.Session(name, in_memory=True)."
                 )
             return session
 
