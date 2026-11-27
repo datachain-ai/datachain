@@ -252,3 +252,23 @@ def test_udf_error_inside_its_own_session_marks_job_failed(tmp_path, catalog_tmp
     assert job is not None
     assert job.status == JobStatus.FAILED, result.stderr
     assert "Intentional failure" in job.error_message
+
+
+@skip_if_not_sqlite
+def test_script_error_before_any_job_prints_traceback_once_and_stores_no_job(
+    tmp_path, catalog_tmpfile
+):
+    script = tmp_path / "script.py"
+    script.write_text(
+        textwrap.dedent("""
+        import datachain as dc
+
+        dc.read_dataset("missing")
+    """)
+    )
+
+    result = _run_script(script, catalog_tmpfile)
+
+    assert result.returncode == 1
+    assert result.stderr.count("DatasetNotFoundError: Dataset missing not found") == 1
+    assert catalog_tmpfile.metastore.get_last_job_by_name(str(script)) is None
