@@ -29,6 +29,7 @@ from datachain.lib.udf import (
     UDFBase,
     UdfError,
     UdfRunError,
+    _PrefetchBudget,
 )
 from datachain.lib.utils import DataChainError
 from datachain.query import dataset
@@ -880,13 +881,23 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
             for name in ("prefix.bin", "member.bin") * 2
         ]
     expected = [b"prefix", data] * 2
+    rows = len(members) if method == "map" else len(members) // 2
 
     downloads = 0
-    entered = 0
+    entered = admitted = 0
     both_entered = threading.Event()
+    all_admitted = threading.Event()
     removed = []
     orig_download = Client._download
     orig_remove = Cache.remove
+    orig_take = _PrefetchBudget.take
+
+    def counted_take(self, item):
+        nonlocal admitted
+        orig_take(self, item)
+        admitted += 1
+        if admitted == rows:
+            all_admitted.set()
 
     async def synced_download(self, file, *, callback=None):
         nonlocal entered
@@ -898,7 +909,9 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
     async def fake_put_in_cache(self, file, callback=None):
         nonlocal downloads
         downloads += 1
-        await asyncio.to_thread(both_entered.wait, 1)
+        # a second download waits on the lock, and every row holds the archive
+        assert await asyncio.to_thread(both_entered.wait, 10)
+        assert await asyncio.to_thread(all_admitted.wait, 10)
         self.cache.store_data(file, raw)
 
     def read_storage(self, file, block_size=None):
@@ -908,6 +921,7 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
         removed.append(file.path)
         orig_remove(self, file)
 
+    monkeypatch.setattr(_PrefetchBudget, "take", counted_take)
     monkeypatch.setattr(Client, "_download", synced_download)
     monkeypatch.setattr(Client, "_put_in_cache", fake_put_in_cache)
     monkeypatch.setattr(Client, "_open_remote", read_storage)
