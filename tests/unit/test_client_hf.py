@@ -513,7 +513,7 @@ def test_unchanged_check_of_a_mutable_file_asks_the_hub(
         bucket.assert_called_once_with("org/bucket", ["a.txt"])
 
     repo.return_value, bucket.return_value = [], iter([])  # deleted
-    with pytest.raises(FileNotFoundError, match="a.txt"):
+    with pytest.raises(FileNotFoundError, match=r"a\.txt"):
         client.check_unchanged(file)
 
 
