@@ -205,6 +205,34 @@ def test_except_hook_uses_default_hook_in_interactive_session(monkeypatch):
     assert called == [(AttributeError, exc, None)]
 
 
+def test_except_hook_on_ctrl_c_marks_job_canceled_and_exits_130(
+    test_session, patch_argv, monkeypatch, clean_job_state
+):
+    monkeypatch.setattr("sys.ps1", None, raising=False)
+    job = test_session.get_or_create_job()
+    monkeypatch.setattr(Session, "ORIGINAL_EXCEPT_HOOK", lambda *args: None)
+
+    with pytest.raises(SystemExit) as exit_info:
+        Session.except_hook(KeyboardInterrupt, KeyboardInterrupt(), None)
+
+    assert exit_info.value.code == 130
+    db_job = test_session.catalog.metastore.get_job(job.id)
+    assert db_job.status == JobStatus.CANCELED
+
+
+def test_except_hook_without_a_job_delegates_to_original(monkeypatch, clean_job_state):
+    monkeypatch.setattr("sys.ps1", None, raising=False)
+    called = []
+    monkeypatch.setattr(
+        Session, "ORIGINAL_EXCEPT_HOOK", lambda *args: called.append(args)
+    )
+
+    exc = ValueError("boom")
+    Session.except_hook(type(exc), exc, None)
+
+    assert called == [(ValueError, exc, None)]
+
+
 @pytest.mark.parametrize("use_datachain_job_id_env", [True, False])
 def test_job_is_created_after_save(test_session, monkeypatch, use_datachain_job_id_env):
     if use_datachain_job_id_env:

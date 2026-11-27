@@ -73,6 +73,7 @@ class Session:
     _JOB_FINALIZE_HOOK: ClassVar[Callable[[], None] | None] = None
     # The session that created the process job and finalizes it.
     _JOB_SESSION: ClassVar["Session | None"] = None
+    _EXCEPT_HOOK_INSTALLED: ClassVar[bool] = False
 
     GLOBAL_SESSION_NAME = "global"
     SESSION_UUID_LEN = 6
@@ -437,9 +438,11 @@ class Session:
 
     @classmethod
     def _install_except_hook(cls) -> None:
-        if sys.excepthook is not cls.except_hook:
+        # Only once: a hook set after ours may call ours back.
+        if not cls._EXCEPT_HOOK_INSTALLED:
             cls.ORIGINAL_EXCEPT_HOOK = sys.excepthook
             sys.excepthook = cls.except_hook
+            cls._EXCEPT_HOOK_INSTALLED = True
 
     @staticmethod
     def except_hook(exc_type, exc_value, exc_traceback):
@@ -493,6 +496,7 @@ class Session:
 
         if cls.ORIGINAL_EXCEPT_HOOK:
             sys.excepthook = cls.ORIGINAL_EXCEPT_HOOK
+        cls._EXCEPT_HOOK_INSTALLED = False
 
     @staticmethod
     def _global_cleanup():

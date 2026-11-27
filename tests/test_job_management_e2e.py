@@ -216,3 +216,32 @@ def test_script_ctrl_c_inside_its_own_session_marks_job_canceled(
     job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
     assert job is not None
     assert job.status == JobStatus.CANCELED, result.stderr
+
+
+@skip_if_not_sqlite
+def test_script_error_after_wrapping_the_except_hook_marks_job_failed(
+    tmp_path, catalog_tmpfile
+):
+    script = tmp_path / "script.py"
+    script.write_text(
+        textwrap.dedent("""
+        import sys
+
+        import datachain as dc
+
+        chain = dc.read_values(a=[1])
+        previous = sys.excepthook
+        sys.excepthook = lambda *args: previous(*args)
+        chain.save("a")
+        raise RuntimeError("Intentional failure")
+    """)
+    )
+
+    result = _run_script(script, catalog_tmpfile)
+
+    assert result.returncode == 1
+    assert "RecursionError" not in result.stderr
+    assert "Intentional failure" in result.stderr
+    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
+    assert job is not None
+    assert job.status == JobStatus.FAILED, result.stderr
