@@ -41,6 +41,22 @@ def hf_repositories(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def hub():
+    """Serves the SDK's HTTP requests with the handler a test passes, and
+    returns the SDK's HTTP module to build responses with."""
+    from huggingface_hub.utils import _http, get_session, set_client_factory
+
+    http = sys.modules[type(get_session()).__module__.partition(".")[0]]
+
+    def serve(handler):
+        set_client_factory(lambda: http.Client(transport=http.MockTransport(handler)))
+        return http
+
+    yield serve
+    set_client_factory(_http.default_client_factory)
+
+
 def test_info_to_file_uses_last_commit_metadata_when_present():
     cache = Mock(spec=Cache)
     client = HfClient("datasets/org/repo", {}, cache)
@@ -227,12 +243,9 @@ def test_cache_fill_with_branch_uri_downloads_selected_revision(
 
 
 @pytest.fixture
-def hf_revision_bytes():
-    """Hub file URLs serve each revision its own bytes; yields them and the
+def hf_revision_bytes(hub):
+    """Hub file URLs serve each revision its own bytes; returns them and the
     revisions asked for."""
-    from huggingface_hub.utils import _http, get_session, set_client_factory
-
-    http = sys.modules[type(get_session()).__module__.partition(".")[0]]
     data = {"main": b"branch bytes", "a" * 40: b"commit bytes"}
     asked = []
 
@@ -245,9 +258,8 @@ def hf_revision_bytes():
             return http.Response(206, content=body[int(start) : int(end) + 1])
         return http.Response(200, content=body)
 
-    set_client_factory(lambda: http.Client(transport=http.MockTransport(serve)))
-    yield data, asked
-    set_client_factory(_http.default_client_factory)
+    http = hub(serve)
+    return data, asked
 
 
 @pytest.mark.parametrize("block_size", [None, 0])
