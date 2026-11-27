@@ -60,8 +60,9 @@ DataValue = BaseModel | int | str | float | bool | list | dict | bytes | datetim
 class DataModel(BaseModel):
     """Pydantic model wrapper that registers model with `DataChain`.
 
-    To leave fields out of `show()`, list them in `_hidden_fields`. They stay in
-    the data and in `to_pandas()`.
+    To leave fields out of `show()` by default, list them in `_hidden_fields`.
+    `show(include_hidden=True)` shows them, and they stay in the data and in
+    `to_pandas()`.
 
     Example:
         ```py

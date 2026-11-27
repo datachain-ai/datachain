@@ -400,16 +400,33 @@ class UDFBase(AbstractUDF):
         self._func = None
 
     def hash(self, include_body: bool = True) -> str:
-        """
-        Creates SHA hash of this UDF function. It takes into account function,
-        inputs and outputs.
+        """The hash that checkpoints compare to reuse an earlier result: of the
+        function (or the `process` method), its parameters and its output.
 
-        For function-based UDFs, hashes self._func.
-        For class-based UDFs, hashes the process method.
+        Attributes set in `__init__` aren't part of it, so a class whose
+        constructor options change the output should add them, as a hex digest:
 
-        When include_body=False, the function body is excluded (identity-only:
-        __module__ + __qualname__ + defaults). Lambdas always include their
-        bytecode since they share the name '<lambda>'.
+        ```py
+        import hashlib
+
+        import datachain as dc
+
+        class Scale(dc.Mapper):
+            def __init__(self, factor: int):
+                super().__init__()
+                self.factor = factor
+
+            def process(self, x: int) -> int:
+                return x * self.factor
+
+            def hash(self, include_body: bool = True) -> str:
+                key = f"{super().hash(include_body)}:{self.factor}"
+                return hashlib.sha256(key.encode()).hexdigest()
+        ```
+
+        With `include_body=False`, the function body is left out: only its
+        module, name and defaults count. Lambdas always include their bytecode,
+        since they all share the name `<lambda>`.
         """
         # Hash user code: either _func (function-based) or process method (class-based)
         func_to_hash = self._func or self.process

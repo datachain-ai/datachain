@@ -11,7 +11,7 @@ steps need to happen before or after the processing function runs.
 
 ::: datachain.lib.udf.UDFBase
     options:
-      members: [process, setup, teardown]
+      members: [hash, process, setup, teardown]
 
 ::: datachain.lib.udf.Aggregator
 
