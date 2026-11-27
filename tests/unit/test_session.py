@@ -196,7 +196,7 @@ def test_enter_active_session_again_raises_and_keeps_its_data(test_session):
     assert chain.to_values("x") == [1, 2]
 
 
-@pytest.mark.parametrize(
+in_memory_catalog_session = pytest.mark.parametrize(
     "session_of",
     [
         lambda catalog: catalog.session,
@@ -204,6 +204,20 @@ def test_enter_active_session_again_raises_and_keeps_its_data(test_session):
     ],
     ids=["catalog-session", "dataset-query"],
 )
+
+
+@in_memory_catalog_session
+def test_save_through_in_memory_catalog_as_first_call_writes_no_database(
+    tmp_dir, session_of
+):
+    with get_catalog(in_memory=True) as scratch:
+        dc.read_values(x=[1], session=session_of(scratch)).save("scratch")
+
+        assert scratch.get_dataset("scratch")
+        assert not (tmp_dir / ".datachain" / "db").exists()
+
+
+@in_memory_catalog_session
 def test_default_session_after_in_memory_catalog_session_stays_persistent(
     tmp_dir, session_of
 ):

@@ -396,8 +396,9 @@ class Session:
         Parameters:
             session (Session): Returned as is when given.
             catalog (Catalog): The catalog of the global session, if this call
-                    creates it and the catalog isn't in memory. By default, the
-                    catalog the environment configures.
+                    creates it. An in-memory catalog gets the shared in-memory
+                    session instead. By default, the catalog the environment
+                    configures.
             in_memory (bool): The active session if it is in memory, else one
                     in-memory session shared by the process. Raises ValueError
                     with a persistent `session`.
@@ -412,6 +413,9 @@ class Session:
             return session
 
         active = cls.active()
+        # The global session is never in memory.
+        if active is None and catalog is not None and catalog.in_memory:
+            in_memory = True
         if in_memory and (active is None or not active.catalog.in_memory):
             if cls.IN_MEMORY_SESSION is None:
                 cls.IN_MEMORY_SESSION = Session("inmemory", in_memory=True)
@@ -422,9 +426,6 @@ class Session:
             session = cls.SESSION_CONTEXTS[-1]
 
         elif cls.GLOBAL_SESSION_CTX is None:
-            # The global session is never in memory.
-            if catalog is not None and catalog.in_memory:
-                catalog = None
             cls.GLOBAL_SESSION_CTX = Session(cls.GLOBAL_SESSION_NAME, catalog)
             session = cls.GLOBAL_SESSION_CTX
 
