@@ -151,8 +151,9 @@ class Pool:
     def __init__(self, client: "RangeListedClient", prefix: str, size: int) -> None:
         # the page size travels so that tests can shrink it in children too
         spec = (type(client), client.name, client.fs_kwargs, client.cache)
+        listing = (client.LIST_PAGE_SIZE, prefix, client.encode_page)
         try:
-            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix, client.encode_page))
+            self.spec = dump((*spec, *listing, client._unversioned))
         except Exception:
             logger.debug(
                 "Listing in one process: client config does not pickle", exc_info=True
@@ -256,6 +257,16 @@ class Pool:
             await asyncio.wait(waits, timeout=5)
 
 
+def _child_client(spec: tuple) -> tuple["RangeListedClient", str]:
+    """The parent's client, in the parent's listing mode, and the listing's prefix."""
+    cls, name, fs_kwargs, cache, page_size, prefix, encode, unversioned = spec
+    client = cls(name, fs_kwargs, cache)
+    client.LIST_PAGE_SIZE = page_size
+    client.encode_page = encode
+    client._unversioned = unversioned
+    return client, prefix
+
+
 def main(out_fd: int) -> None:
     """A child's entry: the spec, then requests, on stdin; replies on ``out_fd``."""
     from fsspec.asyn import get_loop, sync
@@ -266,10 +277,7 @@ def main(out_fd: int) -> None:
         os.dup2(devnull.fileno(), 0)
     try:
         if (spec := load(inp)) is not None:
-            cls, name, fs_kwargs, cache, page_size, prefix, encode = spec
-            client = cls(name, fs_kwargs, cache)
-            client.LIST_PAGE_SIZE = page_size
-            client.encode_page = encode
+            client, prefix = _child_client(spec)
     except Exception as e:  # noqa: BLE001
         spec = None  # such as a class in the parent's __main__: the parent lists alone
         with suppress(OSError):

@@ -369,6 +369,21 @@ def test_prefix_of_only_delete_markers_lists_rows_for_deleted_objects(client, tr
     ]
 
 
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_each_listing_checks_whether_the_bucket_holds_versions(client):
+    assert {e.version for e in scandir(client, "")} == {""}
+
+    client.fs.call_s3(
+        "put_bucket_versioning",
+        Bucket=client.name,
+        VersioningConfiguration={"Status": "Enabled"},
+    )
+    client.fs.pipe(f"{client.uri}/new", b"x")
+
+    assert {e.path: e.version for e in scandir(client, "")}["new"]
+
+
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_scandir_one_page_is_one_range(client, mocker):
     ranges = mocker.spy(client, "_list_page")

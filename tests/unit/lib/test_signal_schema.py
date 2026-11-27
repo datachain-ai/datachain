@@ -1757,6 +1757,12 @@ def test_slice():
             [("name", str), ("age", float)],
         ),
         (
+            {"feature": MyType1 | None},
+            {"feature": MyType1 | None},
+            False,
+            [("feature", MyType1 | None)],
+        ),
+        (
             {"name": str, "age": float, "address": str},
             {"name": list[str], "age": Any},
             True,

@@ -79,6 +79,7 @@ def read_listing_dataset(
     path: str = "",
     session: Session | None = None,
     settings: dict | None = None,
+    in_memory: bool = False,
 ) -> tuple["DataChain", "DatasetVersion"]:
     """Read a listing dataset and return a DataChain and listing version.
 
@@ -88,6 +89,8 @@ def read_listing_dataset(
         path: Path within the listing to read. Path can have globs.
         session: Optional Session object to use for reading
         settings: Optional settings dictionary to use for reading
+        in_memory: If True, reads a listing of the in-memory session, where
+            `read_storage(..., in_memory=True)` lists. Defaults to False.
 
     Returns:
         tuple[DataChain, DatasetVersion]: A tuple containing:
@@ -113,7 +116,7 @@ def read_listing_dataset(
     if not name.startswith(LISTING_PREFIX):
         name = LISTING_PREFIX + name
 
-    session = Session.get(session)
+    session = Session.get(session, in_memory=in_memory)
     dataset = session.catalog.get_dataset(
         name,
         versions=[version] if version else None,
