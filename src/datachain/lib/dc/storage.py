@@ -150,7 +150,7 @@ def read_storage(
     if not uris:
         raise ValueError("No URIs provided")
     session_config, client_config = client_configs(
-        uris, session, anon, client_config, versions
+        uris, session, anon, client_config, versions, in_memory
     )
     session = session_for(session, session_config, in_memory)
     return _read_storage(
@@ -283,7 +283,7 @@ def list_storage(
             endpoint. Replaces the session's.
         session: The session to take the client configuration from and to
             save into with `save()`.
-        in_memory: Make the session that `save()` creates, if any, in memory.
+        in_memory: If True, `save()` stores the listing in memory.
 
     Returns:
         Listing: The files of `uri`.
@@ -304,7 +304,7 @@ def list_storage(
     if not uris:
         raise ValueError("No URIs provided")
     session_config, config = client_configs(
-        uris, session, anon, client_config, versions
+        uris, session, anon, client_config, versions, in_memory
     )
     return Listing(
         uris,
