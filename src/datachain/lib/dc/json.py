@@ -88,7 +88,7 @@ def read_json(
         model_name=model_name,
         jmespath=jmespath,
         nrows=nrows,
-        session=kwargs.get("session"),
+        session=chain.session,
     )
     cloudpickle.register_pickle_by_value(meta_formats)
 

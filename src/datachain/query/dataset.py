@@ -639,6 +639,17 @@ class UDFStep(Step, ABC):
         to select
         """
 
+    def _workers_and_processes(
+        self, catalog: "Catalog", rows_total: int
+    ) -> tuple[bool | int, bool | int]:
+        workers = determine_workers(self.workers, rows_total=rows_total)
+        processes = determine_processes(self.parallel, rows_total=rows_total)
+        if catalog.in_memory:
+            # Defaults from the environment don't apply in memory.
+            workers = workers if self.workers else False
+            processes = processes if self.parallel is not None else False
+        return workers, processes
+
     def populate_udf_output_table(  # noqa: PLR0915
         self,
         udf_table: "Table",
@@ -672,8 +683,7 @@ class UDFStep(Step, ABC):
             get_udf_distributor_class,
         )
 
-        workers = determine_workers(self.workers, rows_total=rows_to_process)
-        processes = determine_processes(self.parallel, rows_total=rows_to_process)
+        workers, processes = self._workers_and_processes(catalog, rows_to_process)
         logger.debug(
             "UDF(%s): Processing %d rows (workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
@@ -2975,6 +2985,14 @@ class DatasetQuery:
         query.steps.append(SQLGroupBy(cols, group_by))
         return query
 
+    def _check_same_database(self, other: "DatasetQuery") -> None:
+        """An in-memory chain and a persistent one live in different databases."""
+        if self.catalog.in_memory != other.catalog.in_memory:
+            raise ValueError(
+                "Cannot combine an in-memory chain with a persistent one; "
+                "read both with the same in_memory"
+            )
+
     def _session_reading(self, other: "DatasetQuery") -> Session:
         """This query's session, reading files of `other`'s storage sources
         with the client configs they were listed with."""
@@ -2987,6 +3005,7 @@ class DatasetQuery:
         return self.session._with_catalog(catalog)
 
     def union(self, dataset_query: "DatasetQuery") -> "DatasetQuery":
+        self._check_same_database(dataset_query)
         left = self.clone()
         right = dataset_query.clone()
         return DatasetQuery(
@@ -3005,6 +3024,7 @@ class DatasetQuery:
         left_tags: tuple[tuple[str, str], ...] = (),
         right_tags: tuple[tuple[str, str], ...] = (),
     ) -> "DatasetQuery":
+        self._check_same_database(dataset_query)
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
             # for use case where we join with itself, e.g dogs.join(dogs, "name")
@@ -3103,6 +3123,7 @@ class DatasetQuery:
         on: Sequence[tuple[str, str]],
         presence: Sequence[tuple[KeyPresence, KeyPresence]] = (),
     ) -> "Self":
+        self._check_same_database(dq)
         query = self.clone()
         query.steps.append(Subtract(dq, self.catalog, on=on, presence=presence))
         return query

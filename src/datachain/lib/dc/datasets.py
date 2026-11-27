@@ -65,6 +65,7 @@ def read_dataset(
     delta_retry: bool | str | None = None,
     delta_unsafe: bool = False,
     update: bool = False,
+    in_memory: bool = False,
 ) -> "DataChain":
     """Get data from a saved Dataset. It returns the chain itself.
     If dataset or version is not found locally, it will try to pull it from Studio.
@@ -110,6 +111,8 @@ def read_dataset(
             diff, file_diff, agg, group_by, distinct. When multiple delta
             sources participate in one composed query, this must be enabled on
             every participating delta source.
+        in_memory: If True, reads from the in-memory session, where chains
+            created with `in_memory=True` save. Defaults to False.
 
 
     Example:
@@ -174,7 +177,7 @@ def read_dataset(
 
     telemetry.send_event_once("class", "datachain_init", name=name, version=version)
 
-    session = Session.get(session)
+    session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog
 
     namespace_name, project_name, name = catalog.get_full_dataset_name(
@@ -280,6 +283,7 @@ def describe(
     session: Session | None = None,
     *,
     studio: bool = False,
+    in_memory: bool = False,
 ) -> DatasetDescription:
     """Describe a saved dataset using recorded metadata only.
 
@@ -290,6 +294,8 @@ def describe(
         version: Exact version to describe; defaults to the latest complete version.
         session: Optional session; defaults to the current session.
         studio: Read Studio directly instead of a local copy.
+        in_memory: If True, describes a dataset of the in-memory session, where
+            chains created with `in_memory=True` save. Defaults to False.
 
     Returns:
         DatasetDescription with a typed schema, every available completed version,
@@ -308,7 +314,7 @@ def describe(
         info.schema.print_tree()
         ```
     """
-    catalog = Session.get(session).catalog
+    catalog = Session.get(session, in_memory=in_memory).catalog
     metadata = read_dataset_metadata(
         catalog,
         name,
@@ -335,7 +341,8 @@ def datasets(
     Args:
         session: Optional session instance. If not provided, uses default session.
         settings: Optional dictionary of settings to configure the chain.
-        in_memory: If True, creates an in-memory session. Defaults to False.
+        in_memory: If True, lists the datasets of the in-memory session, where
+            chains created with `in_memory=True` save. Defaults to False.
         column: Name of the output column in the chain. Defaults to None which
             means no top level column will be created.
         include_listing: If True, includes listing datasets. Defaults to False.
@@ -434,7 +441,8 @@ def delete_dataset(
         studio: If True, removes dataset from Studio only, otherwise removes local
             dataset. Defaults to False.
         session: Optional session instance. If not provided, uses default session.
-        in_memory: If True, creates an in-memory session. Defaults to False.
+        in_memory: If True, deletes from the in-memory session, where chains
+            created with `in_memory=True` save. Defaults to False.
 
     Returns: None
 
@@ -511,7 +519,8 @@ def move_dataset(
             will be used in that case). The original dataset will be moved here.
         session: An optional session instance. If not provided, the default session
             will be used.
-        in_memory: If True, creates an in-memory session. Defaults to False.
+        in_memory: If True, moves within the in-memory session, where chains
+            created with `in_memory=True` save. Defaults to False.
 
     Returns:
         None
@@ -547,6 +556,6 @@ def move_dataset(
         project_id=catalog.metastore.get_project(
             dest_project,
             dest_namespace,
-            create=is_studio(),
+            create=is_studio() and not catalog.in_memory,
         ).id,
     )

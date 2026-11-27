@@ -58,9 +58,9 @@ def retry_processing_example():
         "fifth item",
     ]
 
-    initial_chain = dc.read_values(
-        item_id=sample_ids, content=sample_contents, in_memory=True
-    ).save(name="sample_data")
+    initial_chain = dc.read_values(item_id=sample_ids, content=sample_contents).save(
+        name="sample_data"
+    )
     print(f"Created dataset with {initial_chain.count()} records\n")
 
     # Step 2: First processing pass - some records will fail
@@ -127,4 +127,5 @@ def retry_processing_example():
 
 
 if __name__ == "__main__":
-    retry_processing_example()
+    with dc.Session("retry", in_memory=True):
+        retry_processing_example()
