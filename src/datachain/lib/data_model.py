@@ -97,11 +97,6 @@ class DataModel(BaseModel):
         for val in models:
             ModelStore.register(val)
 
-    @classmethod
-    def hidden_fields(cls) -> list[str]:
-        """Returns a list of fields that should be hidden from the user."""
-        return cls._hidden_fields
-
 
 def compute_model_fingerprint(
     model: type[BaseModel], selection: dict[str, "dict[str, object] | None"]
