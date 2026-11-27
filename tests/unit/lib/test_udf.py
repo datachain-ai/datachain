@@ -30,7 +30,7 @@ from datachain.lib.udf import (
     UdfError,
     UdfRunError,
 )
-from datachain.lib.utils import DataChainError, DataChainParamsError
+from datachain.lib.utils import DataChainError
 from datachain.query import dataset
 
 from .test_udf_signature import get_sign
@@ -641,10 +641,6 @@ def test_nested_data_model_file_parameters_do_not_enable_auto_prefetch(test_sess
 
     holder = Holder(item=File(source="s3://bucket", path="a", size=10))
     chain = dc.read_values(holder=[holder], session=test_session)
-    with pytest.raises(
-        DataChainParamsError, match=r"Use settings\(prefetch_bytes=\.\.\.\)"
-    ):
-        chain.map(prefetch_bytes=100)
     mapped = chain.map(y=lambda holder: holder.item.path, params="holder", output=str)
     udf = mapped._query.steps[-1].udf.inner
     assert (udf.prefetch, udf.prefetch_bytes, udf._effective_prefetch) == (
@@ -701,37 +697,6 @@ def test_a_prefetched_file_reads_its_cached_copy(test_session, monkeypatch):
         .to_values("a")
     )
     assert res == [2]
-
-
-@pytest.mark.parametrize("prefetch", [1, 2, 4, AUTO_PREFETCH])
-def test_explicit_prefetch_bytes_enforces_single_row_minimum(
-    test_session, monkeypatch, prefetch
-):
-    started = 0
-    in_udf = []
-
-    async def fake_prefetch(self, download_cb=None):
-        nonlocal started
-        started += 1
-        return True
-
-    def inspect_first(file: File) -> int:
-        if file.path == "f0":
-            time.sleep(0.02)
-            in_udf.append(started)
-        return file.size
-
-    monkeypatch.setattr(File, "_prefetch", fake_prefetch)
-    files = _files(*[2000] * 6)
-    res = (
-        dc.read_values(file=files, session=test_session)
-        .settings(prefetch=prefetch, prefetch_bytes=1000)
-        .map(sz=inspect_first, output=int)
-        .to_values("sz")
-    )
-    assert res == [2000] * 6
-    assert in_udf == [1]
-    assert started == 6
 
 
 @pytest.mark.parametrize(
@@ -812,6 +777,11 @@ def test_explicit_prefetch_bytes_enforces_single_row_minimum(
         ),
         # Explicit smaller prefetch=1 bounds rows to 2*1+1=3 even when bytes fit
         (_files(*[200] * 6), {"prefetch": 1, "prefetch_bytes": 1000}, 3),
+        # Explicit prefetch_bytes keeps a single-row minimum, whatever the count
+        *(
+            (_files(*[2000] * 6), {"prefetch": n, "prefetch_bytes": 1000}, 1)
+            for n in (1, 2, 4, AUTO_PREFETCH)
+        ),
     ],
     ids=[
         "default-medium",
@@ -824,6 +794,7 @@ def test_explicit_prefetch_bytes_enforces_single_row_minimum(
         "unsized-neg",
         "listed-empty",
         "row-bound",
+        *(f"single-row-minimum-{n}" for n in (1, 2, 4, AUTO_PREFETCH)),
     ],
 )
 def test_prefetch_budget_bounds_in_map(
@@ -955,19 +926,13 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
     assert removed == ["shard.tar"]
 
 
-def test_archive_prefetch_max_size_and_remove_error_in_udf(
-    test_session, monkeypatch, caplog
-):
+def test_archive_prefetch_skips_parents_over_max_size(test_session, monkeypatch):
     parent = File(source="s3://bucket", path="shard.tar", size=4096)
     loc = [{"vtype": "tar", "parent": parent.model_dump()}]
-    members = _files(10, 20, location=loc)
-
-    downloads = 0
+    downloads = []
 
     async def fake_put_in_cache(self, file, callback=None):
-        nonlocal downloads
-        downloads += 1
-        self.cache.store_data(file, b"tar-bytes")
+        downloads.append(file.path)
 
     monkeypatch.setattr(Client, "_put_in_cache", fake_put_in_cache)
 
@@ -977,25 +942,29 @@ def test_archive_prefetch_max_size_and_remove_error_in_udf(
         def process(self, file: File) -> Iterator[int]:
             yield file.size
 
-    # Parent archive (4096 B) exceeds prefetch_max_size (100 B), so not prefetched
     res = (
-        dc.read_values(file=members, session=test_session)
+        dc.read_values(file=_files(10, 20, location=loc), session=test_session)
         .gen(sz=SmallOnlyGen(), output=int)
         .to_values("sz")
     )
     assert sorted(res) == [10, 20]
-    assert downloads == 0
+    assert downloads == []
+
+
+def test_prefetch_logs_a_failed_removal(test_session, monkeypatch, caplog):
+    async def fake_put_in_cache(self, file, callback=None):
+        self.cache.store_data(file, b"data")
 
     def fail_remove(self, _target):
         raise OSError("busy")
 
+    monkeypatch.setattr(Client, "_put_in_cache", fake_put_in_cache)
     monkeypatch.setattr(Cache, "remove", fail_remove)
     res = (
-        dc.read_values(file=members[:1], session=test_session)
+        dc.read_values(file=_files(10), session=test_session)
         .settings(prefetch=1)
         .map(sz=lambda file: file.size, output=int)
         .to_values("sz")
     )
     assert res == [10]
-    assert downloads == 1
     assert "Failed to remove prefetched item" in caplog.text

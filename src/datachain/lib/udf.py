@@ -607,14 +607,6 @@ def _row_files(row: Iterable, batch_columns: set[int] | None) -> Iterator[File]:
             yield from (item for item in obj if isinstance(item, File))
 
 
-_EMPTY_ETAGS = frozenset(
-    {
-        "d41d8cd98f00b204e9800998ecf8427e",  # MD5(b"")
-        "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",  # Git blob SHA-1(b"")
-    }
-)
-
-
 def _row_prefetch_targets(
     row: Iterable,
     batch_columns: set[int] | None,
@@ -668,9 +660,7 @@ class _PrefetchBudget:
     def _target_size(self, target: File) -> int:
         if target.size > 0:
             return target.size
-        if target.size == 0 and (
-            target.last_modified != TIME_ZERO or target.etag in _EMPTY_ETAGS
-        ):
+        if target.size == 0 and target.last_modified != TIME_ZERO:  # listed empty
             return 0
         return self.max_bytes or 0
 

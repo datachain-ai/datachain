@@ -589,7 +589,8 @@ class DataChain:
                 Set to 0 for UDFs that read only part of a file, such as `get_info()`.
             prefetch_bytes: Listed-byte read-ahead target per process, default
                 512 MiB. A minimum row count can exceed this target.
-                No default when `prefetch=N` is set.
+                No default when `prefetch=N` is set. Used by `map()` and `gen()`
+                over files, not by `batch_map()` or `to_pytorch()`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. Each process has its own UDF and setup resources.
                 If an integer is provided, it specifies the number of CPUs to use.
