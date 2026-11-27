@@ -52,13 +52,17 @@ def fresh_hf_filesystems():
 @pytest.fixture
 def hub():
     """Serves the SDK's HTTP requests with the handler a test passes, and
-    returns the SDK's HTTP module to build responses with."""
+    returns the SDK's HTTP module to build responses with. A request the handler
+    returns None for, such as the SDK's own lookups, gets a 404."""
     from huggingface_hub.utils import _http, get_session, set_client_factory
 
     http = sys.modules[type(get_session()).__module__.partition(".")[0]]
 
     def serve(handler):
-        set_client_factory(lambda: http.Client(transport=http.MockTransport(handler)))
+        def respond(request):
+            return handler(request) or http.Response(404)
+
+        set_client_factory(lambda: http.Client(transport=http.MockTransport(respond)))
         return http
 
     yield serve
@@ -258,6 +262,8 @@ def hf_revision_bytes(hub):
     asked = []
 
     def serve(request):
+        if "/resolve/" not in request.url.path:
+            return None
         revision = unquote(request.url.path.split("/resolve/")[1].split("/")[0])
         asked.append(revision)
         body = data[revision]
@@ -676,7 +682,9 @@ def test_reading_a_gated_file_raises_permission_error(
     catalog, monkeypatch, hf_repositories, hub, block_size
 ):
     def serve(request):
-        return http.Response(403, headers={"X-Error-Code": "GatedRepo"})
+        if "/resolve/" in request.url.path:
+            return http.Response(403, headers={"X-Error-Code": "GatedRepo"})
+        return None
 
     http = hub(serve)
     client = HfClient("datasets", {"token": False}, catalog.cache)
