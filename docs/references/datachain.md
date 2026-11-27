@@ -84,6 +84,10 @@ C("file.size") // 1024
 
 
 ::: datachain.lib.dc.DataChain
+    options:
+      filters:
+        - "!^_[^_]"
+        - "!^(to_columnar_data_with_names|results|clone|chunk|delta|delta_unsafe)$"
 
 
 
@@ -91,6 +95,6 @@ C("file.size") // 1024
 
 ::: datachain.query.session.Session
     options:
-      members: [active, get_job, get_or_create_job]
+      members: false
 
 ::: datachain.lib.dc.Sys

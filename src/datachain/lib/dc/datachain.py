@@ -351,7 +351,7 @@ class DataChain:
         )
 
         try:
-            print(chain.select("mistral_response").results())
+            print(chain.to_values("mistral_response"))
         except Exception as e:
             print(f"do you have the right Mistral API key? {e}")
         ```
