@@ -11,12 +11,7 @@ import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
 from datachain.fs.utils import path_to_fsspec_uri
-from datachain.lib.dc.storage_pattern import (
-    convert_globstar_to_glob,
-    path_filter,
-    should_use_recursion,
-    split_uri_pattern,
-)
+from datachain.lib.dc.storage_pattern import path_filter, split_uri_pattern
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
@@ -585,8 +580,16 @@ def test_glob_match_is_sqlite_glob(pattern):
         PathFilter.ls("dir///", False),
         PathFilter.ls("", False),
         PathFilter.ls("d*/x", True),
-        PathFilter.ls("dir/", True).glob("dir/*.txt"),
-        PathFilter.ls("", False).glob("a?"),
+        path_filter("dir/", ["**/*.txt"], True),
+        path_filter("", ["a?"], False),
+        path_filter("dir/", ["**/x.txt"], True),
+        path_filter("dir/", ["*/x.txt"], True),
+        path_filter("", ["d*/**/x*"], True),
+        path_filter("", ["[^d]*/x*"], True),
+        path_filter("", ["[.-0]*/x"], True),
+        path_filter("", ["*/a["], True),
+        path_filter("", ["a*", "*.txt", "d*/**/x*"], True),
+        path_filter("", ["**/?"], True),
     ],
 )
 def test_path_filter_python_matches_sql(test_session, paths):
@@ -604,12 +607,31 @@ def test_path_filter_python_matches_sql(test_session, paths):
         "dir//",
         "dir///",
         "dir///x.txt",
+        "a/x.txt",
+        "a/b/x.txt",
+        "./x",
+        "0/x",
+        "a\n",
+        "d/a\n",
     ]
     chain = dc.read_values(path=names, session=test_session)
     for condition in paths.sql(dc.C("path")):
         chain = chain.filter(condition)
 
     assert sorted(chain.to_values("path")) == sorted(filter(paths.matcher(), names))
+
+
+@pytest.mark.parametrize(
+    "pattern,path,expected",
+    [
+        ("a[^b]c/x", "a/c/x", False),
+        ("a[^b]c/x", "adc/x", True),
+        ("a[.-0]c/x", "a/c/x", False),
+        ("a[.-0]c/x", "a.c/x", True),
+    ],
+)
+def test_pattern_class_stays_in_one_folder(pattern, path, expected):
+    assert path_filter("", [pattern], True).matcher()(path) is expected
 
 
 def test_glob_match_is_sqlite_glob_on_random_patterns():
@@ -622,6 +644,17 @@ def test_glob_match_is_sqlite_glob_on_random_patterns():
             assert glob_match(path, pattern) == bool(expected), (path, pattern)
 
 
+def test_path_filter_is_linear_in_globstars(test_session):
+    paths = path_filter("", ["/".join(["**", "a"] * 8 + ["**", "z*"])], True)
+    names = ["a/" * 48 + "zz/y", "a/" * 8 + "z"]
+    chain = dc.read_values(path=names, session=test_session)
+    for condition in paths.sql(dc.C("path")):
+        chain = chain.filter(condition)
+
+    assert chain.to_values("path") == ["a/" * 8 + "z"]
+    assert [name for name in names if paths.matcher()(name)] == ["a/" * 8 + "z"]
+
+
 def test_glob_match_is_linear_in_stars():
     path = "a" * 1000 + ".txt"
 
@@ -630,39 +663,38 @@ def test_glob_match_is_linear_in_stars():
 
 
 @pytest.mark.parametrize(
-    "list_path,pattern,recursive",
+    "list_path,patterns,recursive,descends,glob",
     [
-        ("dir/", None, True),
-        ("dir/", None, False),
-        ("", None, True),
-        ("d*/x", None, True),
-        ("dir/", "*.txt", True),
-        ("dir/", "**/*.txt", True),
-        ("", "a?", False),
+        ("dir/", (), True, True, None),
+        ("dir/", (), False, False, None),
+        ("", (), True, True, None),
+        ("d*/x", (), True, True, None),
+        ("dir/", ("*.txt",), True, False, "dir/*.txt"),
+        ("dir/", ("**/*.txt",), True, True, "dir/*.txt"),
+        ("dir/", ("**",), True, True, "dir/*"),
+        ("", ("a?",), False, False, "a?"),
+        ("", ("[a-**]",), True, False, "[a-**]"),
+        ("", ("[^a-**]",), True, False, "[^a-**]"),
     ],
 )
-def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recursive):
+def test_select_paths_keeps_filter_steps(
+    test_session, list_path, patterns, recursive, descends, glob
+):
     chain = dc.read_values(file=[File(path="dir/x.txt")], session=test_session)
     path = dc.C("file.path")
-    rec = should_use_recursion(pattern, recursive) if pattern else recursive
     expected = chain.filter(dc.C("file.is_latest") == true())
-    if not rec:
-        expected = expected.filter(
-            pathfunc.parent(path) == list_path.lstrip("/").rstrip("/*")
-        )
-    elif list_path and list_path != "/":
+    if not descends:
+        expected = expected.filter(pathfunc.parent(path) == list_path.strip("/"))
+    elif list_path:
         expected = expected.filter(
             path.glob(list_path)
             if uses_glob(list_path)
             else (path == list_path) | path.glob(list_path.rstrip("/") + "/*")
         )
-    if pattern:
-        glob = convert_globstar_to_glob(pattern)
-        if subpath := list_path.strip("/"):
-            glob = f"{subpath}/{glob}"
+    if glob:
         expected = expected.filter(path.glob(glob))
 
-    actual = select_paths(chain, path_filter(list_path, pattern, recursive))
+    actual = select_paths(chain, path_filter(list_path, patterns, recursive))
 
     assert [s.hash() for s in actual._query.steps] == [
         s.hash() for s in expected._query.steps
