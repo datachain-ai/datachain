@@ -1,5 +1,6 @@
 import os
 import queue as queue_mod
+import sqlite3
 from io import BytesIO
 from queue import Empty, Full
 from types import SimpleNamespace
@@ -194,10 +195,22 @@ def test_one_process_dispatcher_prefetches_into_a_temporary_cache(
             pass
 
         def communicate(self, data):
-            monkeypatch.setattr(
-                dispatch, "stdin", SimpleNamespace(buffer=BytesIO(data))
-            )
-            udf_entrypoint()
+            opened = []
+            connect = sqlite3.connect
+
+            def track(*args, **kwargs):
+                # closable here, though the input reader opens one in its thread
+                opened.append(connect(*args, **kwargs, check_same_thread=False))
+                return opened[-1]
+
+            with monkeypatch.context() as m:
+                m.setattr(dispatch, "stdin", SimpleNamespace(buffer=BytesIO(data)))
+                m.setattr(sqlite3, "connect", track)
+                try:
+                    udf_entrypoint()
+                finally:
+                    for db in opened:  # as a child process does on exit
+                        db.close()
 
         def poll(self):
             return 0
