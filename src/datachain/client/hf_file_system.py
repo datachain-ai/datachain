@@ -9,6 +9,7 @@ from huggingface_hub import HfFileSystem, hf_file_system
 from huggingface_hub.constants import REPO_TYPES_URL_PREFIXES
 from huggingface_hub.hf_file_system import (
     SPECIAL_REFS_REVISION_REGEX,
+    HfFileSystemFile,
     HfFileSystemStreamFile,
 )
 from huggingface_hub.utils import HfHubHTTPError
@@ -68,6 +69,12 @@ def _translate_auth_error():
         if _mark_permission_error(e.__cause__) and not isinstance(e, PermissionError):
             raise HfPermissionError(*e.args) from e.__cause__
         raise
+
+
+class _PinnedFile(HfFileSystemFile):
+    def _fetch_range(self, start, end):
+        with _translate_auth_error():
+            return super()._fetch_range(start, end)
 
 
 class _PinnedStreamFile(HfFileSystemStreamFile):
@@ -146,6 +153,10 @@ class PinnedHfFileSystem(HfFileSystem):
                 return _PinnedStreamFile(
                     self, path, mode=mode, revision=revision, **kwargs
                 )
+            if mode == "rb":  # a gated file is denied on its first read
+                if effective_block_size is not None:
+                    kwargs["block_size"] = effective_block_size
+                return _PinnedFile(self, path, mode=mode, revision=revision, **kwargs)
             return super()._open(
                 path, mode=mode, block_size=block_size, revision=revision, **kwargs
             )

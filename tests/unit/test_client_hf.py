@@ -21,6 +21,7 @@ from huggingface_hub.utils import (
 from datachain.asyn import get_loop
 from datachain.cache import Cache
 from datachain.client.hf import HfClient
+from datachain.client.hf_file_system import PinnedHfFileSystem
 from datachain.lib.file import File
 
 
@@ -39,6 +40,13 @@ def hf_repositories(monkeypatch):
 
     monkeypatch.setattr(hf_file_system.HfFileSystem, "_repo_and_revision_exist", exists)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def fresh_hf_filesystems():
+    """HfFileSystem instances, and the listings they cache, outlive a test."""
+    yield
+    PinnedHfFileSystem.clear_instance_cache()
 
 
 @pytest.fixture
@@ -561,11 +569,8 @@ def test_version_only_file_without_size_does_not_fail_size_check(
         )
 
 
-def test_bucket_metadata_and_resolve_path_with_revision(
-    catalog, monkeypatch, hf_repositories
-):
-    cache = Mock(spec=Cache)
-    client = HfClient("buckets", {}, cache)
+def test_bucket_file_metadata(catalog):
+    client = HfClient("buckets", {}, catalog.cache)
     date = datetime(2025, 1, 2, tzinfo=UTC)
     file = client.info_to_file(
         {"size": 12, "xet_hash": "xet-123", "uploaded_at": date},
@@ -579,6 +584,8 @@ def test_bucket_metadata_and_resolve_path_with_revision(
         date,
     )
 
+
+def test_bucket_paths_resolve_without_a_revision(catalog, monkeypatch):
     fs = HfClient("buckets", {"token": False}, catalog.cache).fs.sync_fs
     monkeypatch.setattr(
         hf_file_system.HfFileSystem,
@@ -633,50 +640,57 @@ def test_stream_file_close_releases_exit_stack(catalog, monkeypatch, hf_reposito
     closed.assert_called_once()
 
 
-def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
+def _http_error(cls, status):
+    request = httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo")
+    return cls(str(status), response=httpx.Response(status, request=request))
+
+
+@pytest.mark.parametrize("status,denied", [(401, True), (403, True), (500, False)])
+def test_auth_http_error_is_also_permission_error(catalog, monkeypatch, status, denied):
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
-    req = httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo")
-    resp_401 = httpx.Response(401, request=req)
-    resp_403 = httpx.Response(403, request=req)
-    resp_500 = httpx.Response(500, request=req)
-
+    error = _http_error(HfHubHTTPError, status)
     monkeypatch.setattr(
-        fs._api,
-        "repo_info",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            GatedRepoError("403 Forbidden", response=resp_403)
-        ),
+        hf_file_system.HfFileSystem, "resolve_path", Mock(side_effect=error)
     )
-    with pytest.raises(PermissionError) as gated_exc:
+    with pytest.raises(HfHubHTTPError) as exc:
+        fs.resolve_path("datasets/org/repo/a.txt")
+    restored = pickle.loads(pickle.dumps(exc.value))  # noqa: S301
+    assert isinstance(restored, HfHubHTTPError)
+    assert isinstance(exc.value, PermissionError) is denied
+    assert isinstance(restored, PermissionError) is denied
+
+
+def test_gated_repo_the_sdk_reports_missing_is_a_permission_error(catalog, monkeypatch):
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    error = _http_error(GatedRepoError, 403)
+    monkeypatch.setattr(fs._api, "repo_info", Mock(side_effect=error))
+    with pytest.raises(PermissionError) as exc:
         fs.resolve_path("datasets/org/gated/a.txt")
-    restored_gated = pickle.loads(pickle.dumps(gated_exc.value))  # noqa: S301
-    assert isinstance(restored_gated, FileNotFoundError)
-    assert isinstance(restored_gated, PermissionError)
+    restored = pickle.loads(pickle.dumps(exc.value))  # noqa: S301
+    assert isinstance(restored, FileNotFoundError)
+    assert isinstance(restored, PermissionError)
 
-    monkeypatch.setattr(
-        hf_file_system.HfFileSystem,
-        "resolve_path",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            HfHubHTTPError("401 Unauthorized", response=resp_401)
-        ),
-    )
-    with pytest.raises(PermissionError) as exc_info:
-        fs.resolve_path("datasets/org/repo/a.txt")
-    assert isinstance(exc_info.value, HfHubHTTPError)
-    restored_401 = pickle.loads(pickle.dumps(exc_info.value))  # noqa: S301
-    assert isinstance(restored_401, HfHubHTTPError)
-    assert isinstance(restored_401, PermissionError)
 
-    monkeypatch.setattr(
-        hf_file_system.HfFileSystem,
-        "resolve_path",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            HfHubHTTPError("500 Internal Server Error", response=resp_500)
-        ),
-    )
-    with pytest.raises(HfHubHTTPError) as exc_500:
-        fs.resolve_path("datasets/org/repo/a.txt")
-    assert not isinstance(exc_500.value, PermissionError)
+@pytest.mark.parametrize("block_size", [None, 0])
+def test_reading_a_gated_file_raises_permission_error(
+    catalog, monkeypatch, hf_repositories, hub, block_size
+):
+    def serve(request):
+        return http.Response(403, headers={"X-Error-Code": "GatedRepo"})
+
+    http = hub(serve)
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    info = {"size": 4, "type": "file"}
+    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value=info))
+    monkeypatch.setattr(client.fs.sync_fs, "info", lambda *a, **kw: info)
+    file = File(source=client.uri, path="org/repo/a.txt", size=4, version="a" * 40)
+
+    # a ranged read: the SDK streams a whole-file read instead
+    with (
+        pytest.raises(PermissionError),
+        client.open_object(file, use_cache=False, block_size=block_size) as stream,
+    ):
+        stream.read(2)
 
 
 def test_hf_filesystem_is_pickleable(catalog):
