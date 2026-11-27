@@ -240,6 +240,8 @@ def test_cache_fill_downloads_the_listed_commit(
     data["b" * 40] = data["main"]
 
     def serve(request):
+        if "/resolve/" not in request.url.path:
+            return None
         revision = request.url.path.split("/resolve/")[1].split("/")[0]
         asked.append(revision)
         return http.Response(200, content=data[revision])
@@ -619,36 +621,27 @@ def test_bucket_get_file_delegates_to_sdk(catalog, monkeypatch, hf_repositories)
 
 
 @pytest.mark.parametrize(
-    "client_name,path",
+    "client_name,path,version",
     [
-        ("datasets", f"org/repo@{'a' * 40}/a.txt"),
-        (f"datasets/org/repo@{'a' * 40}", "a.txt"),
+        ("datasets", f"org/repo@{'a' * 40}/a.txt", ""),
+        (f"datasets/org/repo@{'a' * 40}", "a.txt", ""),
+        ("datasets", "org/repo@main/a.txt", "a" * 40),
     ],
+    ids=["commit-in-uri", "commit-in-client", "listed-commit"],
 )
-def test_unversioned_file_with_commit_in_uri_skips_unchanged_check(
-    catalog, monkeypatch, client_name, path
+def test_a_file_at_a_commit_needs_no_unchanged_check(
+    catalog, monkeypatch, client_name, path, version
 ):
     commit = "a" * 40
     client = HfClient(client_name, {"token": False}, catalog.cache)
-    monkeypatch.setattr(
-        client.fs.sync_fs,
-        "resolve_path",
-        lambda p, revision=None: SimpleNamespace(revision=commit),
-    )
-    monkeypatch.setattr(
-        client.fs,
-        "_info",
-        AsyncMock(side_effect=AssertionError("Pinned URI commit must not call _info")),
-    )
-    client.check_unchanged(
-        File(
-            source=client.uri,
-            path=path,
-            version="",
-            etag="blob",
-            size=4,
-        )
-    )
+    fs = client.fs.sync_fs
+    resolve = Mock(return_value=SimpleNamespace(revision=commit))
+    monkeypatch.setattr(fs, "resolve_path", resolve)
+    info = AsyncMock(side_effect=AssertionError("a commit's file needs no metadata"))
+    monkeypatch.setattr(client.fs, "_info", info)
+    file = File(source=client.uri, path=path, version=version, etag="blob", size=4)
+    client.check_unchanged(file)
+    assert resolve.called is not bool(version)
 
 
 def test_anon_translates_to_token_false_and_credentials_detected():
@@ -660,6 +653,20 @@ def test_anon_translates_to_token_false_and_credentials_detected():
     assert fs_override.sync_fs.token is False
 
 
+def _response(body, status=200, headers=None):
+    """A streamed Hub response; ``body`` is its chunks or a function yielding them."""
+    chunks = body if callable(body) else lambda chunk_size=None: iter(body)
+    return SimpleNamespace(
+        status_code=status,
+        is_error=False,
+        headers=headers or {},
+        iter_bytes=chunks,
+        iter_content=chunks,
+        raise_for_status=lambda: None,
+        close=lambda: None,
+    )
+
+
 def test_stream_file_close_releases_exit_stack(catalog, monkeypatch, hf_repositories):
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
     closed = Mock()
@@ -667,15 +674,7 @@ def test_stream_file_close_releases_exit_stack(catalog, monkeypatch, hf_reposito
     @contextmanager
     def fake_stream(*args, **kwargs):
         try:
-            yield SimpleNamespace(
-                status_code=200,
-                is_error=False,
-                headers={"Content-Length": "4"},
-                iter_bytes=lambda chunk_size=None: iter([b"data"]),
-                iter_content=lambda chunk_size=None: iter([b"data"]),
-                raise_for_status=lambda: None,
-                close=Mock(),
-            )
+            yield _response([b"data"], headers={"Content-Length": "4"})
         finally:
             closed()
 
@@ -763,30 +762,24 @@ def test_hf_filesystem_is_pickleable(catalog):
     assert restored.storage_options == fs.storage_options
 
 
+@pytest.mark.parametrize("block_size", [None, 0])
 @pytest.mark.parametrize(
     "path", ["org/repo@main/a.txt", "org/repo@v1/a.txt", "org/repo/a.txt"]
 )
 def test_open_file_url_uses_explicit_commit_without_folder_metadata(
-    catalog, monkeypatch, hf_repositories, path
+    catalog, monkeypatch, hf_repositories, path, block_size
 ):
     client = HfClient("datasets", {"token": False}, catalog.cache)
     fs = client.fs.sync_fs
     monkeypatch.setattr(
         fs, "info", Mock(side_effect=AssertionError("Unexpected metadata lookup"))
     )
-    with fs.open("datasets/" + path, "rb", block_size=0, revision="c1") as stream:
+    with fs.open(
+        "datasets/" + path, "rb", block_size=block_size, revision="c1", size=4
+    ) as stream:
         assert (
             stream.url() == "https://huggingface.co/datasets/org/repo/resolve/c1/a.txt"
         )
-
-
-def test_immutable_listed_commit_needs_no_metadata_lookup():
-    client = HfClient("datasets", {}, Mock(spec=Cache))
-    client._fs = Mock()
-    file = File(source=client.uri, path="org/repo@main/a.txt", version="a" * 40, size=4)
-    client.check_unchanged(file)
-    client._fs._info.assert_not_called()
-    client._fs.sync_fs.resolve_path.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -811,15 +804,7 @@ async def test_cancelled_download_waits_for_stream_cleanup(
     @contextmanager
     def fake_stream(*args, **kwargs):
         try:
-            yield SimpleNamespace(
-                status_code=200,
-                is_error=False,
-                headers={"Content-Length": "12"},
-                iter_bytes=chunks,
-                iter_content=chunks,
-                raise_for_status=lambda: None,
-                close=lambda: None,
-            )
+            yield _response(chunks, headers={"Content-Length": "12"})
         finally:
             closed.set()
 
@@ -898,15 +883,7 @@ def test_download_truncated_stream_raises_and_does_not_cache(
 
     @contextmanager
     def truncated_stream(*args, **kwargs):
-        yield SimpleNamespace(
-            status_code=200,
-            is_error=False,
-            headers=headers,
-            iter_bytes=lambda chunk_size=None: iter([b"0123"]),
-            iter_content=lambda chunk_size=None: iter([b"0123"]),
-            raise_for_status=lambda: None,
-            close=lambda: None,
-        )
+        yield _response([b"0123"], headers=headers)
 
     monkeypatch.setattr(hf_file_system, "http_stream_backoff", truncated_stream)
     monkeypatch.setattr(hf_file_system, "hf_raise_for_status", lambda _r: None)
@@ -936,18 +913,10 @@ def test_download_retry_handles_full_200_and_partial_206(
     def fake_stream(_method, _url, *, headers, **kwargs):
         range_headers.append(headers.get("Range"))
         first = len(range_headers) == 1
-        yield SimpleNamespace(
-            status_code=200 if first else retry_status,
-            is_error=False,
+        yield _response(
+            broken_chunks if first else [retry_body],
+            status=200 if first else retry_status,
             headers={"Content-Length": str(8 if first else len(retry_body))},
-            iter_bytes=(
-                broken_chunks if first else (lambda chunk_size=None: iter([retry_body]))
-            ),
-            iter_content=(
-                broken_chunks if first else (lambda chunk_size=None: iter([retry_body]))
-            ),
-            raise_for_status=lambda: None,
-            close=lambda: None,
         )
 
     monkeypatch.setattr(hf_file_system, "http_stream_backoff", fake_stream)
@@ -988,15 +957,8 @@ def test_download_of_a_branch_file_resumes_on_one_commit(
         urls.append(url)
         # the branch moves on between the two requests; its commit does not
         body = b"old!1111" if f"/{commit}/" in url else b"new!2222"
-        yield SimpleNamespace(
-            status_code=200,
-            is_error=False,
-            headers={"Content-Length": "8"},
-            iter_bytes=(
-                interrupted if len(urls) == 1 else lambda chunk_size=None: iter([body])
-            ),
-            raise_for_status=lambda: None,
-            close=lambda: None,
+        yield _response(
+            interrupted if len(urls) == 1 else [body], headers={"Content-Length": "8"}
         )
 
     monkeypatch.setattr(hf_file_system, "http_stream_backoff", fake_stream)

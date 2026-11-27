@@ -85,6 +85,9 @@ def _file_url(file_obj) -> str:
 
 
 class _PinnedFile(HfFileSystemFile):
+    def url(self) -> str:
+        return _file_url(self)
+
     def _fetch_range(self, start, end):
         with _translate_auth_error():
             return super()._fetch_range(start, end)
@@ -108,8 +111,12 @@ class _PinnedStreamFile(HfFileSystemStreamFile):
             if self.loc > 0:  # a full body on resume: skip what was read
                 resume_loc, self.loc = self.loc, 0
                 while self.loc < resume_loc:
-                    if not super().read(min(resume_loc - self.loc, 1 << 23)):
+                    skipped = self._read_from_stream(
+                        self._stream_iterator, min(resume_loc - self.loc, 1 << 23)
+                    )
+                    if not skipped:
                         raise OSError(f"{self.path} ended before byte {resume_loc}")
+                    self.loc += len(skipped)
 
     def close(self):
         try:
