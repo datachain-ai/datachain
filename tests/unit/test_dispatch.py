@@ -1,12 +1,15 @@
 import os
 import queue as queue_mod
+from io import BytesIO
 from queue import Empty, Full
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 import datachain as dc
 from datachain.lib.file import File
+from datachain.query import dispatch
 from datachain.query.dispatch import (
     FINISHED_STATUS,
     STOP_SIGNAL,
@@ -170,19 +173,51 @@ def test_udf_entrypoint_restores_only_injected_safe_path(monkeypatch, mocker, in
     assert "_DATACHAIN_UDF_SAFE_PATH" not in os.environ
 
 
-def test_run_udf_single_uses_temporary_prefetch_cache(test_session):
-    seen_caches = []
-    res = (
-        dc.read_values(file=[File(path="")], session=test_session)
-        .settings(prefetch=1, cache=False)
+def test_one_process_dispatcher_prefetches_into_a_temporary_cache(
+    test_session_tmpfile, tmp_path, monkeypatch
+):
+    files = []
+    for name in "ab":
+        (tmp_path / name).write_bytes(name.encode() * 2)
+        files.append(File(source=tmp_path.as_uri(), path=name, size=2))
+
+    class Popen:
+        """Runs the dispatcher of a parallel UDF here, instead of in a child."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def communicate(self, data):
+            monkeypatch.setattr(
+                dispatch, "stdin", SimpleNamespace(buffer=BytesIO(data))
+            )
+            udf_entrypoint()
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr("datachain.query.dataset.subprocess.Popen", Popen)
+    monkeypatch.setattr(dispatch, "get_n_workers_from_arg", lambda n: 1)
+    rows = (
+        dc.read_values(file=files, session=test_session_tmpfile)
+        .settings(prefetch=1, cache=False, parallel=2)
         .map(
-            ok=lambda file: seen_caches.append(file._catalog.cache) or 1,
-            output=int,
+            lambda file: (file.read(), file.get_local_path()),
+            output={"data": bytes, "path": str},
         )
-        .to_values("ok")
+        .order_by("sys.id")
+        .to_list("data", "path")
     )
-    assert res == [1]
-    assert len(seen_caches) == 1
-    assert seen_caches[0].cache_dir != test_session.catalog.cache.cache_dir
-    assert seen_caches[0]._fallback.cache_dir == test_session.catalog.cache.cache_dir
-    assert not os.path.exists(seen_caches[0].cache_dir)
+
+    cache = test_session_tmpfile.catalog.cache
+    assert [data for data, _ in rows] == [b"aa", b"bb"]
+    for _, path in rows:
+        assert path.startswith(os.path.join(cache.tmp_dir, "prefetch-"))
+        assert not os.path.exists(path)
+    assert not any(cache.contains(file) for file in files)

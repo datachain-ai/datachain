@@ -161,6 +161,8 @@ class PytorchDataset(IterableDataset):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=self._remove_prefetched,
+            # DataLoader workers share the cache, and its archives
+            keep_archives=True,
         )
 
         with download_cb, closing(rows):

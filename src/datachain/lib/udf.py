@@ -552,7 +552,10 @@ class UDFBase(AbstractUDF):
     @property
     def _effective_prefetch(self) -> int:
         """Prefetch only when an input can carry a file."""
-        return self.prefetch if self._has_file_inputs else 0
+        assert self.params is not None
+        # a setup value's type is known only at run time
+        setup = any(name in self.params.setup_func for name in self.params.values)
+        return self.prefetch if setup or self._has_file_inputs else 0
 
     def read_columns(self) -> list[str]:
         """The db columns `run()` reads, besides sys__id and the partition id."""
@@ -617,6 +620,7 @@ def _row_prefetch_targets(
     batch_columns: set[int] | None,
     max_size: int | None = None,
     custom_prefetch: bool = False,
+    keep_archives: bool = False,
 ) -> tuple[list[File], list[File]]:
     """Files to fetch for ``row`` and whole-file cache targets to budget/evict."""
     to_fetch: list[File] = []
@@ -627,11 +631,14 @@ def _row_prefetch_targets(
         target = obj._prefetch_target()
         if not target.path:
             continue
-        if target is obj:
+        member = target is not obj
+        if not member:  # a snapshot to evict, as the UDF may change its file
             target = obj.model_copy()
         if max_size is None or 0 < target.size <= max_size:
-            targets.append(target)
-            to_fetch.append(obj if custom_prefetch else target)
+            if not (member and keep_archives):
+                targets.append(target)
+            # the row's own file, so the UDF reads it as cached
+            to_fetch.append(target if member and not custom_prefetch else obj)
         elif custom_prefetch:
             to_fetch.append(obj)
     return to_fetch, targets
@@ -753,6 +760,7 @@ def _prefetch_inputs(
     prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]] | None" = (
         None
     ),
+    keep_archives: bool = False,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -787,7 +795,7 @@ def _prefetch_inputs(
         with safe_closing(prepared_inputs):
             for row in prepared_inputs:
                 files, raw_targets = _row_prefetch_targets(
-                    row, batch_columns, max_size, custom_prefetch
+                    row, batch_columns, max_size, custom_prefetch, keep_archives
                 )
                 targets = budget.targets_for(raw_targets)
                 budget.take(targets)

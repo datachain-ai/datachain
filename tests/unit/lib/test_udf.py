@@ -1,10 +1,14 @@
 import asyncio
+import io
 import pickle
+import tarfile
 import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from cloudpickle import dumps, loads
 from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
@@ -14,10 +18,12 @@ import datachain as dc
 from datachain import Generator, Mapper
 from datachain.cache import Cache
 from datachain.client.fsspec import Client
+from datachain.lib import arrow
 from datachain.lib.data_model import DataModel
-from datachain.lib.file import File
+from datachain.lib.file import ArrowRow, File
 from datachain.lib.settings import AUTO_PREFETCH, AUTO_PREFETCH_BYTES, DEFAULT_PREFETCH
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.tar import build_tar_member
 from datachain.lib.udf import (
     JsonSerializationError,
     UDFBase,
@@ -649,6 +655,54 @@ def test_nested_data_model_file_parameters_do_not_enable_auto_prefetch(test_sess
     assert mapped.to_values("y") == ["a"]
 
 
+def test_explicit_prefetch_fetches_a_setup_file(test_session, monkeypatch):
+    fetched = []
+
+    async def fake_prefetch(self, download_cb=None):
+        fetched.append(self.path)
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", fake_prefetch)
+    ref = File(source="s3://bucket", path="ref", size=10)
+    res = (
+        dc.read_values(x=[1, 2], session=test_session)
+        .setup(ref=lambda: ref)
+        .settings(prefetch=2)
+        .map(y=lambda ref: ref.path, output=str)
+        .to_values("y")
+    )
+    assert res == ["ref", "ref"]
+    assert set(fetched) == {"ref"}
+
+
+def test_a_prefetched_file_reads_its_cached_copy(test_session, monkeypatch):
+    buf = io.BytesIO()
+    pq.write_table(pa.table({"a": [1, 2]}), buf)
+    data = buf.getvalue()
+
+    async def fake_put_in_cache(self, file, callback=None):
+        self.cache.store_data(file, data)
+
+    def read_storage(*args, **kwargs):
+        raise AssertionError("read the storage again")
+
+    monkeypatch.setattr(Client, "_put_in_cache", fake_put_in_cache)
+    monkeypatch.setattr(arrow, "pyarrow_fs", read_storage)
+    res = (
+        dc.read_values(
+            file=[File(source="s3://bucket", path="t.parquet", size=len(data))],
+            session=test_session,
+        )
+        .settings(prefetch=2)
+        .map(
+            a=lambda file: ArrowRow(file=file, index=1, kwargs={}).read()["a"],
+            output=int,
+        )
+        .to_values("a")
+    )
+    assert res == [2]
+
+
 @pytest.mark.parametrize("prefetch", [1, 2, 4, AUTO_PREFETCH])
 def test_explicit_prefetch_bytes_enforces_single_row_minimum(
     test_session, monkeypatch, prefetch
@@ -845,11 +899,16 @@ def test_mutated_file_in_udf_does_not_corrupt_prefetch_budget(
     ids=["map-default", "map-prefetch-2", "map-prefetch-bytes", "batch-map-default"],
 )
 def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
-    test_session, monkeypatch, method, settings
+    test_session, monkeypatch, small_tar_member_data, method, settings
 ):
-    parent = File(source="s3://bucket", path="shard.tar", size=4096)
-    loc = [{"vtype": "tar", "parent": parent.model_dump()}]
-    members = _files(*([10] * 4), location=loc)
+    data, raw = small_tar_member_data
+    parent = File(source="s3://bucket", path="shard.tar", size=len(raw))
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        members = [
+            build_tar_member(parent, archive.getmember(name))
+            for name in ("prefix.bin", "member.bin") * 2
+        ]
+    expected = [b"prefix", data] * 2
 
     downloads = 0
     entered = 0
@@ -869,7 +928,10 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
         nonlocal downloads
         downloads += 1
         await asyncio.to_thread(both_entered.wait, 1)
-        self.cache.store_data(file, b"tar-bytes")
+        self.cache.store_data(file, raw)
+
+    def read_storage(self, file, block_size=None):
+        raise AssertionError(f"read {file.path} from the storage")
 
     def track_remove(self, file):
         removed.append(file.path)
@@ -877,22 +939,18 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
 
     monkeypatch.setattr(Client, "_download", synced_download)
     monkeypatch.setattr(Client, "_put_in_cache", fake_put_in_cache)
+    monkeypatch.setattr(Client, "_open_remote", read_storage)
     monkeypatch.setattr(Cache, "remove", track_remove)
 
     chain = dc.read_values(file=members, session=test_session).settings(**settings)
     if method == "map":
-        chain = chain.map(
-            cached=lambda file: int(file._catalog.cache.contains(parent)),
-            output=int,
-        )
+        chain = chain.map(data=lambda file: file.read(), output=bytes)
     else:
         chain = chain.batch_map(
-            cached=lambda file: [int(f._catalog.cache.contains(parent)) for f in file],
-            output=int,
-            batch=2,
+            data=lambda file: [f.read() for f in file], output=bytes, batch=2
         )
 
-    assert chain.to_values("cached") == [1] * len(members)
+    assert chain.order_by("sys.id").to_values("data") == expected
     assert downloads == 1
     assert removed == ["shard.tar"]
 
