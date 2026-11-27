@@ -6,6 +6,7 @@ import pytest
 
 import datachain as dc
 from datachain.catalog import Catalog
+from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError, TableMissingError
 from datachain.query.session import Session
@@ -155,6 +156,81 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
             catalog.get_dataset(temp_name, include_incomplete=True)
 
 
+def test_get_in_memory_returns_one_shared_session_apart_from_default(tmp_dir):
+    session = Session.get(in_memory=True)
+    default = Session.get()
+    assert session.catalog.in_memory
+    assert not default.catalog.in_memory
+    assert Session.get(in_memory=True) is session
+
+    view = Session.get(in_memory=True, client_config={"anon": True})
+    assert view.catalog.in_memory
+    assert view.catalog.client_config == {"anon": True}
+    assert Session.get() is default
+
+    with session:
+        pass
+    reopened = Session.get(in_memory=True)
+    assert reopened is not session
+    assert dc.read_values(x=[1], session=reopened).to_values("x") == [1]
+
+
+def test_get_inside_in_memory_session_stays_in_memory():
+    with Session("mem", in_memory=True) as active:
+        assert Session.get(in_memory=True) is active
+        assert Session.get(client_config={"anon": True}).catalog.in_memory
+    assert active not in Session.SESSION_CONTEXTS
+
+
+def test_read_values_in_memory_with_persistent_session_raises(test_session):
+    with pytest.raises(ValueError, match="can't be used with the persistent session"):
+        dc.read_values(x=[1], session=test_session, in_memory=True)
+
+
+def test_read_storage_in_memory_with_persistent_session_raises(test_session, tmp_dir):
+    with pytest.raises(ValueError, match="can't be used with the persistent session"):
+        dc.read_storage(tmp_dir.as_uri(), session=test_session, in_memory=True)
+
+
+def test_read_in_memory_with_in_memory_session_uses_it():
+    with Session("mem", in_memory=True) as mem:
+        chain = dc.read_values(x=[1], session=mem, in_memory=True)
+        assert chain.to_values("x") == [1]
+        assert chain.session.catalog is mem.catalog
+
+
+def test_in_memory_chain_in_studio_job_writes_nothing_to_job_catalog(
+    catalog_tmpfile, tmp_path, monkeypatch
+):
+    job_id = catalog_tmpfile.metastore.create_job(
+        "studio-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "True")
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+    monkeypatch.setenv("DATACHAIN__METASTORE", catalog_tmpfile.metastore.serialize())
+    monkeypatch.setenv("DATACHAIN__WAREHOUSE", catalog_tmpfile.warehouse.serialize())
+    results = tmp_path / "results"
+    results.mkdir()
+    (results / "a.txt").write_text("a")
+    default = Session.get(catalog=catalog_tmpfile)
+    assert default.get_or_create_job().id == job_id
+
+    saved = (
+        dc.read_storage(results.as_uri(), in_memory=True)
+        .map(size=lambda file: file.size, output=int)
+        .save("sizes")
+    )
+
+    assert saved.to_values("size") == [1]
+    in_memory_job = Session.get(in_memory=True).get_job()
+    assert in_memory_job is not None
+    assert saved.job.id == in_memory_job.id != job_id
+    assert default.get_job().id == job_id
+    assert catalog_tmpfile.listings() == []
+    with pytest.raises(DatasetNotFoundError):
+        catalog_tmpfile.get_dataset("sizes")
+
+
 def test_get_job_returns_none_without_env_or_cached_job(catalog, monkeypatch):
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     with Session("testjob", catalog=catalog) as session:
@@ -162,8 +238,6 @@ def test_get_job_returns_none_without_env_or_cached_job(catalog, monkeypatch):
 
 
 def test_get_job_fetches_from_env_var(catalog, monkeypatch):
-    from datachain.data_storage import JobQueryType, JobStatus
-
     job_id = catalog.metastore.create_job(
         "env-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
     )
@@ -292,3 +366,15 @@ def test_session_cleanup_tolerates_dropped_metastore_tables(catalog):
     with pytest.raises(TableMissingError):
         list(metastore.list_datasets_by_prefix("session_"))
     session._cleanup_temp_datasets()
+
+
+def test_session_stack_after_failed_cleanup_drops_the_session(catalog, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("cleanup failed")
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        with Session("failing", catalog=catalog) as session:
+            dc.read_values(x=[1], session=session).persist()
+            monkeypatch.setattr(session.catalog, "remove_dataset", fail)
+
+    assert session not in Session.SESSION_CONTEXTS

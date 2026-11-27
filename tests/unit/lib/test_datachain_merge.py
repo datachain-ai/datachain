@@ -10,7 +10,6 @@ import datachain as dc
 from datachain import DataModel
 from datachain.lib.dc import C, DatasetMergeError
 from datachain.lib.signal_schema import SignalResolvingError
-from tests.utils import skip_if_not_sqlite
 
 
 class User(BaseModel):
@@ -141,9 +140,7 @@ def test_merge_similar_objects(test_session):
     assert len(list(ch_inner.to_list())) == 2
 
 
-@skip_if_not_sqlite
 def test_merge_similar_objects_in_memory():
-    # Skip if not on SQLite, as in_memory databases are only supported on SQLite
     new_employees = [
         Employee(id=152, person=User(name="Bob", age=27)),
         Employee(id=201, person=User(name="Karl", age=18)),
@@ -151,8 +148,7 @@ def test_merge_similar_objects_in_memory():
     ]
 
     ch1 = dc.read_values(emp=employees, in_memory=True)
-    # This should use the same session as above (in_memory=True automatically)
-    ch2 = dc.read_values(emp=new_employees)
+    ch2 = dc.read_values(emp=new_employees, in_memory=True)
     assert ch1.session.catalog.in_memory is True
     assert ch1.session.catalog.metastore.db.db_file == ":memory:"
     assert ch1.session.catalog.warehouse.db.db_file == ":memory:"

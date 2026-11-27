@@ -50,12 +50,13 @@ def client_configs(
     anon: bool | None,
     client_config: dict | None,
     versions: bool,
+    in_memory: bool = False,
 ) -> tuple[dict, dict]:
     """The client config to read the files of ``uris`` with, and the client
     config to list them with.
 
     ``client_config`` if given, else the config of ``session`` or the active
-    session. ``anon`` is set
+    session, the shared in-memory session's for ``in_memory``. ``anon`` is set
     on it, True when None and every bucket is public and has no credentials,
     and ``version_aware=False`` without ``versions``. An explicit session is
     never changed.
@@ -64,7 +65,7 @@ def client_configs(
 
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
-    config = _session_client_config(session, client_config)
+    config = _session_client_config(session, client_config, in_memory)
     if (
         anon is None
         and not _backends_have_credentials(uris, config)
@@ -92,9 +93,15 @@ def session_for(
     return session._with_catalog(catalog)
 
 
-def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
+def _session_client_config(
+    session: Session | None, client_config: dict | None, in_memory: bool
+) -> dict:
     """``client_config`` if given, else the session's, without creating one."""
     if client_config is not None:
         return client_config
-    session = session or Session.active()
+    if session is None:
+        session = Session.active()
+        if in_memory and session and not session.catalog.in_memory:
+            # The chain runs in the shared in-memory session, which has no config.
+            session = None
     return session.catalog.client_config if session else {}

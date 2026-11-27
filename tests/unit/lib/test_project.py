@@ -78,6 +78,12 @@ def test_create_by_user_not_allowed(test_session):
     assert str(excinfo.value) == "Creating project is not allowed"
 
 
+def test_create_in_memory_session_in_studio_not_allowed():
+    with dc.Session("mem", in_memory=True) as session:
+        with pytest.raises(ProjectCreateNotAllowedError, match="not allowed in memory"):
+            dc.create_project("dev", "chatbot", session=session)
+
+
 def test_get_project(test_session, chatbot_project, dev_namespace):
     project = get_project(
         chatbot_project.name, dev_namespace.name, session=test_session
