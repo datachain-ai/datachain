@@ -59,6 +59,8 @@ class Session:
     """
 
     GLOBAL_SESSION_CTX: "Session | None" = None
+    # The session `in_memory=True` resolves to; never the global session.
+    IN_MEMORY_SESSION: "Session | None" = None
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
     _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
     ORIGINAL_EXCEPT_HOOK = None
@@ -92,12 +94,13 @@ class Session:
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
         self.is_new_catalog = not catalog
-        self._owns_process_job = False
         self._parent: Session | None = None
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
         )
         self._cleanup_catalogs: list[Catalog] = [self.catalog]
+        # The job of an in-memory catalog lives in that catalog.
+        self._session_job: Job | None = None
         Session._ALL_SESSIONS.add(self)
 
     def _with_catalog(self, catalog: "Catalog") -> "Session":
@@ -111,7 +114,6 @@ class Session:
         # The owner cleans up temporary datasets created through this view.
         view._cleanup_catalogs = self._cleanup_catalogs
         view.is_new_catalog = False
-        view._owns_process_job = False
         return view
 
     def __enter__(self):
@@ -124,33 +126,10 @@ class Session:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            if (
-                self.is_new_catalog
-                and self.catalog.in_memory
-                and self._owns_process_job
-            ):
-                try:
-                    if exc_type is None or (
-                        issubclass(exc_type, SystemExit)
-                        and (
-                            exc_val is None
-                            or getattr(exc_val, "code", exc_val) in (None, 0)
-                        )
-                    ):
-                        self._finalize_job_success()
-                    elif issubclass(exc_type, KeyboardInterrupt):
-                        self._finalize_job_as_canceled()
-                    else:
-                        self._finalize_job_as_failed(exc_type, exc_val, exc_tb)
-                finally:
-                    self._owns_process_job = False
-                    Session._reset_process_job()
+            self._close()
         finally:
-            try:
-                self._close()
-            finally:
-                if Session.SESSION_CONTEXTS:
-                    Session.SESSION_CONTEXTS.pop()
+            if Session.SESSION_CONTEXTS:
+                Session.SESSION_CONTEXTS.pop()
 
     def _close(self) -> None:
         """Clean up this scope without changing the active session stack."""
@@ -162,14 +141,19 @@ class Session:
             self.catalog.warehouse.close_on_exit()
 
         Session._ALL_SESSIONS.discard(self)
+        if Session.IN_MEMORY_SESSION is self:
+            Session.IN_MEMORY_SESSION = None
 
     def get_job(self) -> "Job | None":
         """
         Return the current job if one exists, without creating a new one.
 
         Checks the cached ``_CURRENT_JOB`` and ``DATACHAIN_JOB_ID`` env var.
-        Returns None if no job is found.
+        Returns None if no job is found. An in-memory catalog has a job of its own.
         """
+        if self.catalog.in_memory:
+            return (self._parent or self)._session_job
+
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
 
@@ -201,7 +185,17 @@ class Session:
 
         Note:
             Job is shared across all Session instances to ensure one job per process.
+            An in-memory catalog has a job of its own, in that catalog.
         """
+        if self.catalog.in_memory:
+            owner = self._parent or self
+            if owner._session_job is None:
+                metastore = self.catalog.metastore
+                job_id = metastore.create_job("in-memory", "", status=JobStatus.RUNNING)
+                owner._session_job = metastore.get_job(job_id)
+            assert owner._session_job is not None
+            return owner._session_job
+
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
 
@@ -252,19 +246,12 @@ class Session:
             Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
             Session._OWNS_JOB = True
             Session._JOB_STATUS = JobStatus.RUNNING
-            owner = self
-            while owner._parent is not None and (
-                owner._parent.catalog.metastore is self.catalog.metastore
-                or (owner._parent.catalog.in_memory and self.catalog.in_memory)
-            ):
-                owner = owner._parent
-            owner._owns_process_job = True
 
             # register cleanup hooks only once
             if not Session._JOB_HOOKS_REGISTERED:
 
                 def _finalize_success_hook() -> None:
-                    owner._finalize_job_success()
+                    self._finalize_job_success()
 
                 Session._JOB_FINALIZE_HOOK = _finalize_success_hook
                 atexit.register(Session._JOB_FINALIZE_HOOK)
@@ -394,12 +381,27 @@ class Session:
             session (Session): Optional Session(). If not provided a new session will
                     be created. It's needed mostly for simple API purposes.
             catalog (Catalog): Optional catalog. By default, a new catalog is created.
+            in_memory (bool): The active session if it is in memory, else one
+                    in-memory session shared by the process. Raises ValueError
+                    with a persistent `session`.
         """
         if session:
+            if in_memory and not session.catalog.in_memory:
+                raise ValueError(
+                    "in_memory=True can't be used with the persistent session "
+                    f"{session.name!r}. Drop session=, or pass an in-memory "
+                    "session: dc.Session(name, in_memory=True)."
+                )
             return session
 
+        active = cls.active()
+        if in_memory and (active is None or not active.catalog.in_memory):
+            if cls.IN_MEMORY_SESSION is None:
+                cls.IN_MEMORY_SESSION = Session("inmemory", in_memory=True)
+            session = cls.IN_MEMORY_SESSION
+
         # Access the active (most recent) context from the stack
-        if cls.SESSION_CONTEXTS:
+        elif cls.SESSION_CONTEXTS:
             session = cls.SESSION_CONTEXTS[-1]
 
         elif cls.GLOBAL_SESSION_CTX is None:
@@ -407,7 +409,6 @@ class Session:
                 cls.GLOBAL_SESSION_NAME,
                 catalog,
                 client_config=client_config,
-                in_memory=in_memory,
             )
             session = cls.GLOBAL_SESSION_CTX
 
@@ -418,11 +419,14 @@ class Session:
             session = cls.GLOBAL_SESSION_CTX
 
         if client_config and session.catalog.client_config != client_config:
+            if session.catalog.in_memory:
+                # A view: an in-memory session never becomes the active session.
+                view_catalog = session.catalog.copy()
+                view_catalog.client_config = client_config
+                view_catalog.source_client_configs = {}
+                return session._with_catalog(view_catalog)
             session = Session(
-                "session" + uuid4().hex[:4],
-                catalog,
-                client_config=client_config,
-                in_memory=in_memory,
+                "session" + uuid4().hex[:4], catalog, client_config=client_config
             )
             session.__enter__()
 
@@ -457,7 +461,16 @@ class Session:
             sys.exit(130)
 
     @classmethod
-    def _reset_process_job(cls) -> None:
+    def cleanup_for_tests(cls):
+        cls._close_all_contexts()
+        if cls.IN_MEMORY_SESSION is not None:
+            cls.IN_MEMORY_SESSION._close()
+        if cls.GLOBAL_SESSION_CTX is not None:
+            cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
+            cls.GLOBAL_SESSION_CTX = None
+            atexit.unregister(cls._global_cleanup)
+
+        # Reset job-related class variables
         if cls._JOB_FINALIZE_HOOK:
             try:
                 atexit.unregister(cls._JOB_FINALIZE_HOOK)
@@ -468,17 +481,6 @@ class Session:
         cls._OWNS_JOB = None
         cls._JOB_HOOKS_REGISTERED = False
         cls._JOB_FINALIZE_HOOK = None
-
-    @classmethod
-    def cleanup_for_tests(cls):
-        cls._close_all_contexts()
-        if cls.GLOBAL_SESSION_CTX is not None:
-            cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
-            cls.GLOBAL_SESSION_CTX = None
-            atexit.unregister(cls._global_cleanup)
-
-        # Reset job-related class variables
-        cls._reset_process_job()
 
         if cls.ORIGINAL_EXCEPT_HOOK:
             sys.excepthook = cls.ORIGINAL_EXCEPT_HOOK
