@@ -1,5 +1,7 @@
+import asyncio
 import pickle
 import sys
+import threading
 from contextlib import aclosing, contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -16,7 +18,6 @@ from huggingface_hub.utils import (
     GatedRepoError,
     HfHubHTTPError,
     HFValidationError,
-    _pagination,
 )
 
 from datachain.asyn import get_loop
@@ -40,6 +41,33 @@ def hf_repositories(monkeypatch):
 
     monkeypatch.setattr(hf_file_system.HfFileSystem, "_repo_and_revision_exist", exists)
     return calls
+
+
+@pytest.fixture
+def hub():
+    """Serves the SDK's HTTP requests with the handler a test passes, and
+    returns the SDK's HTTP module to build responses with."""
+    from huggingface_hub.utils import _http, get_session, set_client_factory
+
+    http = sys.modules[type(get_session()).__module__.partition(".")[0]]
+
+    def serve(handler):
+        set_client_factory(lambda: http.Client(transport=http.MockTransport(handler)))
+        return http
+
+    yield serve
+    set_client_factory(_http.default_client_factory)
+
+
+def _tree_entry(path, blob, commit="c1", size=4):
+    date = "2024-10-12T00:00:00.000Z"
+    return {
+        "type": "file",
+        "path": path,
+        "size": size,
+        "oid": blob,
+        "lastCommit": {"id": commit, "title": "", "date": date},
+    }
 
 
 def test_info_to_file_uses_last_commit_metadata_when_present():
@@ -123,7 +151,7 @@ def test_recursive_listing_preserves_versions_without_walking_directories(
         ("org/repo@main/data/nested/b.json", 4, "blob-b", "other-commit", date),
     ]
     fs.find.assert_called_once_with(
-        "datasets/org/repo@main/data", detail=True, expand_info=True
+        "datasets/org/repo@main/data", detail=True, refresh=True, expand_info=True
     )
     ls_spy.assert_not_called()
 
@@ -156,7 +184,10 @@ def test_recursive_listing_accepts_single_files_and_empty_directories(
     monkeypatch.setattr(fs, "info", fake_info)
     rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
     assert [(r.path, r.version) for r in rows] == [("org/repo@main/file", "c1")]
-    assert info_calls[-1] == ("datasets/org/repo@main/file", {"expand_info": True})
+    assert info_calls[-1] == (
+        "datasets/org/repo@main/file",
+        {"refresh": True, "expand_info": True},
+    )
 
     monkeypatch.setattr(fs, "find", lambda *a, **kw: {})
     info_calls.clear()
@@ -171,7 +202,7 @@ def test_recursive_listing_accepts_single_files_and_empty_directories(
         sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
         == []
     )
-    assert info_calls == [("datasets/org/repo@main/file", {})]
+    assert info_calls == [("datasets/org/repo@main/file", {"refresh": True})]
 
     monkeypatch.setattr(
         fs,
@@ -182,62 +213,76 @@ def test_recursive_listing_accepts_single_files_and_empty_directories(
         sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
 
 
-def test_recursive_listing_uses_sdk_pagination(catalog, monkeypatch, hf_repositories):
-    client = HfClient("datasets", {"token": False}, catalog.cache)
+def test_recursive_listing_follows_the_hubs_pages(catalog, hf_repositories, hub):
     next_url = "https://huggingface.co/api/datasets/org/repo/tree/main?cursor=page2"
-    page1 = httpx.Response(
-        200,
-        headers={"Link": f'<{next_url}>; rel="next"'},
-        json=[
-            {"type": "directory", "path": "data", "oid": "tree", "size": 0},
-            {
-                "type": "file",
-                "path": "data/a.txt",
-                "size": 4,
-                "oid": "blob-c1",
-                "lastCommit": {
-                    "id": "c1",
-                    "title": "first",
-                    "date": "2024-10-12T00:00:00.000Z",
-                },
-            },
-        ],
-        request=httpx.Request(
-            "GET", "https://huggingface.co/api/datasets/org/repo/tree/main"
-        ),
-    )
-    page2 = httpx.Response(
-        200,
-        json=[
-            {
-                "type": "file",
-                "path": "data/deep/b.txt",
-                "size": 7,
-                "oid": "blob-c2",
-                "lastCommit": {
-                    "id": "c2",
-                    "title": "second",
-                    "date": "2024-10-13T00:00:00.000Z",
-                },
-            }
-        ],
-        request=httpx.Request("GET", next_url),
-    )
-    responses = [page1, page2]
-    requests = []
+    asked = []
 
-    def fake_http_backoff(method, url, **kwargs):
-        requests.append((method, url, kwargs.get("params")))
-        return responses.pop(0)
+    def serve(request):
+        asked.append(str(request.url))
+        if request.url.params.get("cursor") == "page2":
+            return http.Response(
+                200, json=[_tree_entry("data/deep/b.txt", "b2", "c2", 7)]
+            )
+        folder = {"type": "directory", "path": "data", "oid": "tree", "size": 0}
+        return http.Response(
+            200,
+            headers={"Link": f'<{next_url}>; rel="next"'},
+            json=[folder, _tree_entry("data/a.txt", "b1", "c1")],
+        )
 
-    monkeypatch.setattr(_pagination, "http_backoff", fake_http_backoff)
+    http = hub(serve)
+    client = HfClient("datasets", {"token": False}, catalog.cache)
     rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main"))
     assert [(r.path, r.version, r.size, r.etag) for r in rows] == [
-        ("org/repo@main/data/a.txt", "c1", 4, "blob-c1"),
-        ("org/repo@main/data/deep/b.txt", "c2", 7, "blob-c2"),
+        ("org/repo@main/data/a.txt", "c1", 4, "b1"),
+        ("org/repo@main/data/deep/b.txt", "c2", 7, "b2"),
     ]
-    assert len(requests) == 2
-    assert requests[1][1] == next_url
+    assert len(asked) == 2
+    assert asked[1] == next_url
+
+
+def test_each_listing_reads_the_hubs_current_tree(catalog, hf_repositories, hub):
+    blobs = ["old"]
+
+    def serve(request):
+        return http.Response(200, json=[_tree_entry("a.txt", blobs[-1])])
+
+    http = hub(serve)
+
+    def etags():
+        client = HfClient("datasets", {"token": False}, catalog.cache)
+        rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo"))
+        return [row.etag for row in rows]
+
+    assert etags() == ["old"]
+    blobs.append("new")
+    assert etags() == ["new"]
+
+
+def test_a_cancelled_listing_frees_its_thread(catalog, monkeypatch, hf_repositories):
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    first, done = threading.Event(), threading.Event()
+
+    def list_pages(prefix, emit, stop):
+        try:
+            emit([1])
+            first.set()
+            emit([2])  # waits on the full queue nobody reads
+        finally:
+            done.set()
+
+    monkeypatch.setattr(client, "_list", list_pages)
+
+    async def cancel_while_the_queue_is_full():
+        queue = asyncio.Queue(1)
+        task = asyncio.create_task(client._fetch_default("", queue))
+        await asyncio.to_thread(first.wait)
+        await asyncio.sleep(0.2)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    sync(get_loop(), cancel_while_the_queue_is_full)
+    assert done.wait(5)
 
 
 def test_recursive_listing_bucket_preserves_xet_hash_and_mtime_and_skips_siblings(
@@ -495,12 +540,9 @@ def test_cache_fill_with_branch_uri_downloads_selected_revision(
 
 
 @pytest.fixture
-def hf_revision_bytes():
-    """Hub file URLs serve each revision its own bytes; yields them and the
+def hf_revision_bytes(hub):
+    """Hub file URLs serve each revision its own bytes; returns them and the
     revisions asked for."""
-    from huggingface_hub.utils import _http, get_session, set_client_factory
-
-    http = sys.modules[type(get_session()).__module__.partition(".")[0]]
     data = {"main": b"branch bytes", "a" * 40: b"commit bytes"}
     asked = []
 
@@ -513,9 +555,8 @@ def hf_revision_bytes():
             return http.Response(206, content=body[int(start) : int(end) + 1])
         return http.Response(200, content=body)
 
-    set_client_factory(lambda: http.Client(transport=http.MockTransport(serve)))
-    yield data, asked
-    set_client_factory(_http.default_client_factory)
+    http = hub(serve)
+    return data, asked
 
 
 @pytest.mark.parametrize("block_size", [None, 0])

@@ -106,25 +106,25 @@ class HfClient(Client):
     ) -> None:
         loop = asyncio.get_running_loop()
         stop = threading.Event()
-        pending_put: Any = None
         with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
 
             def emit(page: list[FileRow]) -> None:
-                nonlocal pending_put
                 if stop.is_set():
                     return
                 pbar.update(len(page))
-                pending_put = asyncio.run_coroutine_threadsafe(
-                    result_queue.put(page), loop
-                )
-                pending_put.result()
+                put = asyncio.run_coroutine_threadsafe(result_queue.put(page), loop)
+                while not stop.is_set():  # a stopped reader leaves the queue full
+                    try:
+                        put.result(timeout=0.1)
+                        return
+                    except TimeoutError:
+                        pass
+                put.cancel()
 
             try:
                 await asyncio.to_thread(self._list, start_prefix, emit, stop)
             finally:
                 stop.set()
-                if pending_put is not None:
-                    pending_put.cancel()
 
     def _list(
         self,
@@ -143,14 +143,15 @@ class HfClient(Client):
         under = f"{path}/"
         base = f"{prefix}/" if prefix else ""
         expand = {"expand_info": True} if repository else {}
-        found = fs.find(path, detail=True, **expand)
+        # fresh: the SDK caches trees, and a branch or a bucket changes
+        found = fs.find(path, detail=True, refresh=True, **expand)
         page: list[FileRow] = []
         matched = False
         for name, info in found.items():
             if stop is not None and stop.is_set():
                 return
             if name == path:
-                info = fs.info(name, **expand)
+                info = fs.info(name, refresh=True, **expand)
                 relative = prefix
             elif name.startswith(under):
                 relative = base + name[len(under) :]
@@ -177,7 +178,7 @@ class HfClient(Client):
                 emit(page)
                 page = []
         if not matched:
-            fs.info(path)
+            fs.info(path, refresh=True)
             return
         if page:
             emit(page)
