@@ -645,9 +645,9 @@ class Client(ABC):
     ) -> None:
         # Metadata updates can change a pinned file's etag without changing its
         # bytes, so compare its size instead, which still catches appends. A negative
-        # size (or an unrecorded default size=0 without an etag) means it's unknown.
+        # size, or one never set, means it's unknown.
         pinned = self._is_version_pinned(file)
-        has_size = file.size > 0 or (file.size == 0 and bool(file.etag))
+        has_size = file.size > 0 or (file.size == 0 and "size" in file.model_fields_set)
 
         change = ""
         if (pinned or (self._has_version(file) and not file.etag)) and has_size:
