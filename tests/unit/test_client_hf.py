@@ -1,8 +1,10 @@
 import pickle
+import sys
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -224,49 +226,68 @@ def test_cache_fill_with_branch_uri_downloads_selected_revision(
         assert stream.read() == b"data"
 
 
+@pytest.fixture
+def hf_revision_bytes():
+    """Hub file URLs serve each revision its own bytes; yields them and the
+    revisions asked for."""
+    from huggingface_hub.utils import _http, get_session, set_client_factory
+
+    http = sys.modules[type(get_session()).__module__.partition(".")[0]]
+    data = {"main": b"branch bytes", "a" * 40: b"commit bytes"}
+    asked = []
+
+    def serve(request):
+        revision = unquote(request.url.path.split("/resolve/")[1].split("/")[0])
+        asked.append(revision)
+        body = data[revision]
+        if ranged := request.headers.get("range"):
+            start, _, end = ranged.removeprefix("bytes=").partition("-")
+            return http.Response(206, content=body[int(start) : int(end) + 1])
+        return http.Response(200, content=body)
+
+    set_client_factory(lambda: http.Client(transport=http.MockTransport(serve)))
+    yield data, asked
+    set_client_factory(_http.default_client_factory)
+
+
+@pytest.mark.parametrize("block_size", [None, 0])
+@pytest.mark.parametrize("path", ["org/repo@main/a.txt", "org/repo/a.txt"])
+def test_open_reads_the_listed_commit(
+    catalog, monkeypatch, hf_repositories, hf_revision_bytes, block_size, path
+):
+    data, asked = hf_revision_bytes
+    commit = "a" * 40
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    size = len(data[commit])
+    info = {"size": size, "type": "file"}
+    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value=info))
+    monkeypatch.setattr(client.fs.sync_fs, "info", lambda *a, **kw: info)
+    file = File(source=client.uri, path=path, size=size, version=commit)
+
+    with client.open_object(file, use_cache=False, block_size=block_size) as stream:
+        assert stream.read() == data[commit]
+    assert set(asked) == {commit}
+
+
+@pytest.mark.parametrize("prefix", ["datasets/org/", "org/"])
 @pytest.mark.parametrize(
     "path",
     [
-        "repo@main/archive.tar",
-        "repo@refs/pr/1/archive.tar",
-        "repo@refs%2Fpr%2F1/archive.tar",
-        "repo@v1/archive.tar",
-        "repo/archive.tar",
+        "repo@main/a.tar",
+        "repo@refs/pr/1/a.tar",
+        "repo@refs%2Fpr%2F1/a.tar",
+        "repo@v1/a.tar",
+        "repo/a.tar",
     ],
 )
-@pytest.mark.parametrize("block_size", [None, 0])
-@pytest.mark.parametrize("client_name,prefix", [("datasets", "org/"), ("org", "")])
-def test_open_reads_listed_commit_with_revision_in_uri(
-    catalog,
-    monkeypatch,
-    small_tar_member_data,
-    tar_member_range_requests,
-    path,
-    block_size,
-    client_name,
-    prefix,
-    hf_repositories,
-):
-    client = HfClient(client_name, {"token": False}, catalog.cache)
-    _, raw = small_tar_member_data
-    commit = "a" * 40
-    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": len(raw)}))
-    monkeypatch.setattr(
-        client.fs.sync_fs,
-        "info",
-        Mock(
-            side_effect=AssertionError(
-                "open_object must not call fs.info when size is known"
-            )
-        ),
+def test_resolve_path_pins_any_uri_revision(catalog, hf_repositories, prefix, path):
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    resolved = fs.resolve_path(f"{prefix}{path}", revision="c1")
+    assert (resolved.repo_id, resolved.revision, resolved.path_in_repo) == (
+        "org/repo",
+        "c1",
+        "a.tar",
     )
-    tar_member_range_requests(HfFileSystemFile)
-    rel_path = f"{prefix}{path}"
-    file = File(source=client.uri, path=rel_path, size=len(raw), version=commit)
-    with client.open_object(file, use_cache=False, block_size=block_size) as stream:
-        assert stream.fileobj.resolved_path.revision == commit
-        assert stream.read(5) == raw[:5]
-    assert file.path == rel_path
 
 
 @pytest.mark.parametrize(
@@ -462,43 +483,44 @@ def test_pinned_unchanged_check_reuses_sdk_directory_cache(
     fetch.assert_not_called()
 
 
-def test_mutable_branch_version_checks_etag_on_unchanged(
-    catalog, monkeypatch, hf_repositories
+@pytest.mark.parametrize(
+    "client_name,path,version",
+    [("datasets", "org/repo/a.txt", "main"), ("buckets", "org/bucket/a.txt", "")],
+    ids=["branch", "bucket"],
+)
+def test_unchanged_check_of_a_mutable_file_asks_the_hub(
+    catalog, monkeypatch, hf_repositories, client_name, path, version
 ):
-    client = HfClient("datasets", {"token": False}, catalog.cache)
+    client = HfClient(client_name, {"token": False}, catalog.cache)
     fs = client.fs.sync_fs
-    fs.dircache["datasets/org/repo@main"] = [
-        {
-            "name": "datasets/org/repo@main/a.txt",
-            "size": 4,
-            "type": "file",
-            "blob_id": "new-blob",
-        }
-    ]
-    file = File(
-        source=client.uri,
-        path="org/repo/a.txt",
-        version="main",
-        etag="old-blob",
-        size=4,
-    )
-    with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
-        client.check_unchanged(file)
-
-    fs.dircache["datasets/org/repo@main"] = [
-        {
-            "name": "datasets/org/repo@main/a.txt",
-            "size": 4,
-            "type": "file",
-            "last_commit": None,
-        }
-    ]
     monkeypatch.setattr(
-        fs._api,
-        "get_paths_info",
-        lambda *a, **kw: [RepoFile(path="a.txt", size=4, oid="new-blob")],
+        hf_file_system.HfFileSystem,
+        "_bucket_exists",
+        lambda self, bid: (True, None),
+        raising=False,
     )
-    with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
+    # a listing cached the file before it changed
+    for parent in ("datasets/org/repo@main", "buckets/org/bucket"):
+        fs.dircache[parent] = [
+            {"name": f"{parent}/a.txt", "size": 4, "type": "file", "blob_id": "old"}
+        ]
+    repo = Mock(return_value=[RepoFile(path="a.txt", size=4, oid="new")])
+    bucket = Mock(return_value=iter([SimpleNamespace(xet_hash="new")]))
+    monkeypatch.setattr(fs._api, "get_paths_info", repo)
+    monkeypatch.setattr(fs._api, "get_bucket_paths_info", bucket, raising=False)
+    file = File(source=client.uri, path=path, version=version, etag="old", size=4)
+
+    with pytest.raises(FileNotFoundError, match="etag was old, now new"):
+        client.check_unchanged(file)
+    if version:
+        repo.assert_called_once_with(
+            "org/repo", "a.txt", revision="main", repo_type="dataset"
+        )
+    else:
+        bucket.assert_called_once_with("org/bucket", ["a.txt"])
+
+    repo.return_value, bucket.return_value = [], iter([])  # deleted
+    with pytest.raises(FileNotFoundError, match="a.txt"):
         client.check_unchanged(file)
 
 
@@ -512,6 +534,9 @@ def test_version_only_file_without_size_does_not_fail_size_check(
         client.check_unchanged(
             File(source=client.uri, path="org/repo/a.txt", version=rev)
         )
+    client.check_unchanged(
+        File(source=client.uri, path="org/repo/a.txt", version=commit, etag="blob")
+    )
     with pytest.raises(FileNotFoundError, match="size was 0, now 4"):
         client.check_unchanged(
             File(
