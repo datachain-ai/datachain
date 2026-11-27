@@ -1,6 +1,5 @@
 """End-to-end tests for JobManager with real script execution."""
 
-import os
 import subprocess
 import sys
 import textwrap
@@ -8,9 +7,20 @@ import textwrap
 import pytest
 
 from datachain.data_storage import JobStatus
-from tests.utils import skip_if_not_sqlite
+from tests.utils import e2e_subprocess_env, skip_if_not_sqlite
 
 python_exc = sys.executable or "python3"
+
+
+def _run_script(script, catalog):
+    return subprocess.run(  # noqa: S603
+        [python_exc, str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=e2e_subprocess_env(catalog),
+    )
 
 
 @skip_if_not_sqlite
@@ -36,18 +46,7 @@ def test_single_job_for_multiple_saves(tmp_path, catalog_tmpfile):
     """)
     script.write_text(script_content)
 
-    result = subprocess.run(  # noqa: S603
-        [python_exc, str(script)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env={
-            **os.environ,
-            "DATACHAIN__METASTORE": catalog_tmpfile.metastore.serialize(),
-            "DATACHAIN__WAREHOUSE": catalog_tmpfile.warehouse.serialize(),
-        },
-    )
+    result = _run_script(script, catalog_tmpfile)
 
     assert result.returncode == 0, f"Script failed: {result.stderr}"
     assert "COMPLETED" in result.stdout
@@ -77,7 +76,30 @@ def test_single_job_for_multiple_saves(tmp_path, catalog_tmpfile):
         )
 
 
+SAVES_IN_DEFAULT_SESSION = """
+    import datachain as dc
+
+    dc.read_values(a=[1, 2, 3]).save("dataset_a")
+    dc.read_values(b=[4, 5, 6]).save("dataset_b")
+    {exception_code}
+"""
+
+SAVES_IN_OWN_SESSION = """
+    import datachain as dc
+
+    with dc.Session("own"):
+        dc.read_values(a=[1, 2, 3]).save("dataset_a")
+        dc.read_values(b=[4, 5, 6]).save("dataset_b")
+        {exception_code}
+"""
+
+
 @skip_if_not_sqlite
+@pytest.mark.parametrize(
+    "script_template",
+    [SAVES_IN_DEFAULT_SESSION, SAVES_IN_OWN_SESSION],
+    ids=["default_session", "own_session"],
+)
 @pytest.mark.parametrize(
     "exception_code,expected_status,expected_returncode,check_error_details",
     [
@@ -89,6 +111,7 @@ def test_single_job_for_multiple_saves(tmp_path, catalog_tmpfile):
 def test_job_marked_on_exception(
     tmp_path,
     catalog_tmpfile,
+    script_template,
     exception_code,
     expected_status,
     expected_returncode,
@@ -101,27 +124,12 @@ def test_job_marked_on_exception(
     Datasets persist even with unhandled exceptions.
     """
     script = tmp_path / "test_exception.py"
-    script_content = textwrap.dedent(f"""
-        import datachain as dc
-
-        dc.read_values(a=[1, 2, 3]).save("dataset_a")
-        dc.read_values(b=[4, 5, 6]).save("dataset_b")
-        {exception_code}
-    """)
+    script_content = textwrap.dedent(script_template).format(
+        exception_code=exception_code
+    )
     script.write_text(script_content)
 
-    result = subprocess.run(  # noqa: S603
-        [python_exc, str(script)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env={
-            **os.environ,
-            "DATACHAIN__METASTORE": catalog_tmpfile.metastore.serialize(),
-            "DATACHAIN__WAREHOUSE": catalog_tmpfile.warehouse.serialize(),
-        },
-    )
+    result = _run_script(script, catalog_tmpfile)
 
     assert result.returncode == expected_returncode
     if check_error_details:
@@ -156,68 +164,6 @@ def test_job_marked_on_exception(
     assert "dataset_b" in dataset_names
 
 
-def _run_script(script, catalog):
-    return subprocess.run(  # noqa: S603
-        [python_exc, str(script)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env={
-            **os.environ,
-            "DATACHAIN__METASTORE": catalog.metastore.serialize(),
-            "DATACHAIN__WAREHOUSE": catalog.warehouse.serialize(),
-        },
-    )
-
-
-@skip_if_not_sqlite
-def test_script_error_inside_its_own_session_marks_job_failed(
-    tmp_path, catalog_tmpfile
-):
-    script = tmp_path / "script.py"
-    script.write_text(
-        textwrap.dedent("""
-        import datachain as dc
-
-        with dc.Session("own"):
-            dc.read_values(a=[1]).save("a")
-            raise RuntimeError("Intentional failure")
-    """)
-    )
-
-    result = _run_script(script, catalog_tmpfile)
-
-    assert result.returncode == 1
-    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
-    assert job is not None
-    assert job.status == JobStatus.FAILED, result.stderr
-    assert "Intentional failure" in job.error_message
-
-
-@skip_if_not_sqlite
-def test_script_ctrl_c_inside_its_own_session_marks_job_canceled(
-    tmp_path, catalog_tmpfile
-):
-    script = tmp_path / "script.py"
-    script.write_text(
-        textwrap.dedent("""
-        import datachain as dc
-
-        with dc.Session("own"):
-            dc.read_values(a=[1]).save("a")
-            raise KeyboardInterrupt()
-    """)
-    )
-
-    result = _run_script(script, catalog_tmpfile)
-
-    assert result.returncode == 130
-    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
-    assert job is not None
-    assert job.status == JobStatus.CANCELED, result.stderr
-
-
 @skip_if_not_sqlite
 def test_script_error_after_wrapping_the_except_hook_marks_job_failed(
     tmp_path, catalog_tmpfile
@@ -231,7 +177,12 @@ def test_script_error_after_wrapping_the_except_hook_marks_job_failed(
 
         chain = dc.read_values(a=[1])
         previous = sys.excepthook
-        sys.excepthook = lambda *args: previous(*args)
+
+        def wrapper(*args):
+            print("wrapper called", file=sys.stderr)
+            previous(*args)
+
+        sys.excepthook = wrapper
         chain.save("a")
         raise RuntimeError("Intentional failure")
     """)
@@ -240,8 +191,64 @@ def test_script_error_after_wrapping_the_except_hook_marks_job_failed(
     result = _run_script(script, catalog_tmpfile)
 
     assert result.returncode == 1
-    assert "RecursionError" not in result.stderr
+    assert result.stderr.count("wrapper called") == 1
     assert "Intentional failure" in result.stderr
     job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
     assert job is not None
     assert job.status == JobStatus.FAILED, result.stderr
+
+
+@skip_if_not_sqlite
+def test_script_error_after_saving_on_a_worker_thread_marks_job_failed(
+    tmp_path, catalog_tmpfile
+):
+    script = tmp_path / "script.py"
+    script.write_text(
+        textwrap.dedent("""
+        from concurrent.futures import ThreadPoolExecutor
+
+        import datachain as dc
+
+        dc.read_values(a=[1])
+
+        def save():
+            session = dc.Session("worker")
+            dc.read_values(a=[1], session=session).save("a")
+            return session
+
+        with ThreadPoolExecutor() as pool:
+            session = pool.submit(save).result()
+        raise RuntimeError("Intentional failure")
+    """)
+    )
+
+    result = _run_script(script, catalog_tmpfile)
+
+    assert result.returncode == 1
+    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
+    assert job is not None
+    assert job.status == JobStatus.FAILED, result.stderr
+
+
+@skip_if_not_sqlite
+def test_udf_error_inside_its_own_session_marks_job_failed(tmp_path, catalog_tmpfile):
+    script = tmp_path / "script.py"
+    script.write_text(
+        textwrap.dedent("""
+        import datachain as dc
+
+        def fail(a: int) -> int:
+            raise RuntimeError("Intentional failure")
+
+        with dc.Session("own"):
+            dc.read_values(a=[1, 2, 3]).map(b=fail).save("dataset_a")
+    """)
+    )
+
+    result = _run_script(script, catalog_tmpfile)
+
+    assert result.returncode == 1
+    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
+    assert job is not None
+    assert job.status == JobStatus.FAILED, result.stderr
+    assert "Intentional failure" in job.error_message

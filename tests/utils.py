@@ -376,6 +376,7 @@ def reset_session_job_state():
     Session._JOB_STATUS = None
     Session._OWNS_JOB = None
     Session._JOB_HOOKS_REGISTERED = False
+    Session._JOB_SESSION = None
 
     # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
     # This is important for studio/SaaS mode where job_id comes from env var

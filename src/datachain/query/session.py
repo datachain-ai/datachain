@@ -4,8 +4,8 @@ import os
 import re
 import sys
 import traceback
-from collections.abc import Callable
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from copy import copy
 from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
@@ -265,6 +265,19 @@ class Session:
         assert Session._CURRENT_JOB is not None
         return Session._CURRENT_JOB
 
+    @contextmanager
+    def _job_catalog(self) -> Iterator["Catalog"]:
+        """This session's catalog on new connections: the session may be closed
+        already, or belong to another thread."""
+        catalog = self.catalog.copy()
+        catalog.metastore = self.catalog.metastore.clone(use_new_connection=True)
+        catalog.warehouse = self.catalog.warehouse.clone(use_new_connection=True)
+        try:
+            yield catalog
+        finally:
+            catalog.metastore.close_on_exit()
+            catalog.warehouse.close_on_exit()
+
     def _finalize_job_success(self):
         """Mark the current job as completed."""
         if (
@@ -272,9 +285,10 @@ class Session:
             and Session._OWNS_JOB
             and Session._JOB_STATUS == JobStatus.RUNNING
         ):
-            self.catalog.metastore.set_job_status(
-                Session._CURRENT_JOB.id, JobStatus.COMPLETE
-            )
+            with self._job_catalog() as catalog:
+                catalog.metastore.set_job_status(
+                    Session._CURRENT_JOB.id, JobStatus.COMPLETE
+                )
             Session._JOB_STATUS = JobStatus.COMPLETE
 
     def _finalize_job_as_canceled(self):
@@ -284,9 +298,10 @@ class Session:
             and Session._OWNS_JOB
             and Session._JOB_STATUS == JobStatus.RUNNING
         ):
-            self.catalog.metastore.set_job_status(
-                Session._CURRENT_JOB.id, JobStatus.CANCELED
-            )
+            with self._job_catalog() as catalog:
+                catalog.metastore.set_job_status(
+                    Session._CURRENT_JOB.id, JobStatus.CANCELED
+                )
             Session._JOB_STATUS = JobStatus.CANCELED
 
     def _finalize_job_as_failed(self, exc_type, exc_value, tb):
@@ -297,19 +312,20 @@ class Session:
             and Session._JOB_STATUS == JobStatus.RUNNING
         ):
             error_stack = "".join(traceback.format_exception(exc_type, exc_value, tb))
-            self.catalog.metastore.set_job_status(
-                Session._CURRENT_JOB.id,
-                JobStatus.FAILED,
-                error_message=str(exc_value),
-                error_stack=error_stack,
-            )
+            with self._job_catalog() as catalog:
+                catalog.metastore.set_job_status(
+                    Session._CURRENT_JOB.id,
+                    JobStatus.FAILED,
+                    error_message=str(exc_value),
+                    error_stack=error_stack,
+                )
 
-            # Mark any incomplete dataset versions created by this job as FAILED
-            self.catalog.metastore.mark_job_dataset_versions_as_failed(
-                Session._CURRENT_JOB.id
-            )
-            # Finally clean all incomplete dataset versions
-            self.catalog.cleanup_dataset_versions(job_id=Session._CURRENT_JOB.id)
+                # Mark any incomplete dataset versions created by this job as FAILED
+                catalog.metastore.mark_job_dataset_versions_as_failed(
+                    Session._CURRENT_JOB.id
+                )
+                # Finally clean all incomplete dataset versions
+                catalog.cleanup_dataset_versions(job_id=Session._CURRENT_JOB.id)
 
             Session._JOB_STATUS = JobStatus.FAILED
 
@@ -458,8 +474,6 @@ class Session:
             job_session._finalize_job_as_canceled()
         elif job_session:
             job_session._finalize_job_as_failed(exc_type, exc_value, exc_traceback)
-        if Session.GLOBAL_SESSION_CTX:
-            Session.GLOBAL_SESSION_CTX.__exit__(exc_type, exc_value, exc_traceback)
 
         Session._global_cleanup()
 
