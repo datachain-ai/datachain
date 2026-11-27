@@ -194,6 +194,7 @@ class GCSClient(RangeListedClient):
         rpath: str,
         callback,
         version_id: str | None = None,
+        expected_size: int | None = None,
     ) -> None:
         # Workaround: gcsfs._get_file() silently ignores the generation= kwarg.
         # Embed it in the path as `path#generation` instead.

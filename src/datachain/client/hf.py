@@ -2,7 +2,6 @@ import asyncio
 import functools
 import posixpath
 import re
-from contextvars import ContextVar
 from threading import Event
 from typing import Any
 
@@ -13,7 +12,6 @@ from datachain.lib.file import File
 from .fsspec import Client
 
 COMMIT = re.compile(r"[0-9a-f]{40}")
-_EXPECTED_SIZE: ContextVar[int | None] = ContextVar("_EXPECTED_SIZE", default=None)
 
 
 class classproperty:  # noqa: N801
@@ -151,14 +149,6 @@ class HfClient(Client):
 
     CHUNK_SIZE = 8 * 1024 * 1024
 
-    async def _put_in_cache(self, file: "File", *, callback=None) -> None:
-        has_size = file.size > 0 or (file.size == 0 and bool(file.etag))
-        token = _EXPECTED_SIZE.set(file.size if has_size else None)
-        try:
-            await super()._put_in_cache(file, callback=callback)
-        finally:
-            _EXPECTED_SIZE.reset(token)
-
     async def get_file(
         self,
         lpath,
@@ -173,11 +163,19 @@ class HfClient(Client):
         )
         if not getattr(p, "repo_id", None):
             return await super().get_file(lpath, rpath, callback, version_id)
-        expected = expected_size if expected_size is not None else _EXPECTED_SIZE.get()
+        revision = p.revision or ""
+        if not COMMIT.fullmatch(revision):  # a resumed read stays on one commit
+            revision = await asyncio.to_thread(fs.commit_of, p)
         stop = Event()
         task = asyncio.create_task(
             asyncio.to_thread(
-                self._stream, p.unresolve(), rpath, callback, stop, expected
+                self._stream,
+                p.unresolve(),
+                rpath,
+                callback,
+                stop,
+                expected_size,
+                revision,
             )
         )
         try:
@@ -199,10 +197,13 @@ class HfClient(Client):
         callback,
         stop=None,
         expected_size: int | None = None,
+        revision: str | None = None,
     ) -> None:
         try:
             with (
-                self.fs.sync_fs.open(path, "rb", block_size=0) as src,
+                self.fs.sync_fs.open(
+                    path, "rb", block_size=0, revision=revision
+                ) as src,
                 open(dst, "wb") as out,
             ):
                 written = 0

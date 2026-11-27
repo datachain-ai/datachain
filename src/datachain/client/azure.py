@@ -251,6 +251,7 @@ class AzureClient(RangeListedClient):
         rpath: str,
         callback,
         version_id: str | None = None,
+        expected_size: int | None = None,
     ) -> None:
         if version_id:
             # adlfs._get_file() only reads version_id from split_path(rpath);

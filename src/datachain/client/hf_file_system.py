@@ -98,9 +98,11 @@ class _PinnedStreamFile(HfFileSystemStreamFile):
                 and str(length).isdigit()
             ):
                 self.size = int(length)
-            if self.loc > 0:
+            if self.loc > 0:  # a full body on resume: skip what was read
                 resume_loc, self.loc = self.loc, 0
-                super().read(resume_loc)
+                while self.loc < resume_loc:
+                    if not super().read(min(resume_loc - self.loc, 1 << 23)):
+                        raise OSError(f"{self.path} ended before byte {resume_loc}")
 
     def close(self):
         try:
@@ -203,6 +205,16 @@ class PinnedHfFileSystem(HfFileSystem):
             raise FileNotFoundError(path)
         info = found[0]
         return getattr(info, "blob_id", None) or getattr(info, "xet_hash", None) or ""
+
+    def commit_of(self, resolved) -> str:
+        """The commit a branch or tag of ``resolved``'s repository points to."""
+        with _translate_auth_error():
+            info = self._api.repo_info(
+                resolved.repo_id,
+                revision=resolved.revision,
+                repo_type=resolved.repo_type,
+            )
+        return info.sha or resolved.revision
 
     def info(self, path, *args, **kwargs):
         kwargs.setdefault("expand_info", bool(getattr(self, "expand_info", False)))

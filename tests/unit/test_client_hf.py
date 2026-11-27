@@ -217,36 +217,34 @@ def test_open_object_huggingface_block_size_zero_reads_only_asked_bytes(
     ]
 
 
-@pytest.mark.parametrize("revision", ["c1", None])
-def test_cache_fill_with_branch_uri_downloads_selected_revision(
-    catalog, monkeypatch, hf_repositories, revision
+@pytest.mark.parametrize("listed", [True, False])
+def test_cache_fill_downloads_the_listed_commit(
+    catalog, monkeypatch, hf_repositories, hub, listed
 ):
     client = HfClient("datasets", {"token": False}, catalog.cache)
-    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
+    fs = client.fs.sync_fs
+    data, asked = {"main": b"branch bytes", "a" * 40: b"commit bytes"}, []
+    # the branch points to the second commit, which holds the branch's bytes
+    data["b" * 40] = data["main"]
+
+    def serve(request):
+        revision = request.url.path.split("/resolve/")[1].split("/")[0]
+        asked.append(revision)
+        return http.Response(200, content=data[revision])
+
+    http = hub(serve)
     monkeypatch.setattr(
-        client.fs.sync_fs, "info", lambda *a, **kw: {"size": 4, "type": "file"}
+        fs._api, "repo_info", lambda *a, **kw: SimpleNamespace(sha="b" * 40)
     )
-    urls = []
-
-    def read(stream, size):
-        if stream.loc:
-            return b""
-        urls.append(stream.url())
-        stream.loc += 4
-        return b"data"
-
-    monkeypatch.setattr(hf_file_system.HfFileSystemStreamFile, "read", read)
-    file = File(
-        source=client.uri, path="org/repo@main/a.txt", size=4, version=revision or ""
-    )
+    version = "a" * 40 if listed else ""
+    file = File(source=client.uri, path="org/repo@main/a.txt", size=12, version=version)
 
     client.put_in_cache(file)
 
-    assert [url.split("/resolve/")[1] for url in urls] == [
-        f"{revision or 'main'}/a.txt"
-    ]
+    assert catalog.cache.get_path(file)
     with client.open_object(file) as stream:
-        assert stream.read() == b"data"
+        assert stream.read() == data[version or "main"]
+    assert asked == [version or "b" * 40]
 
 
 @pytest.fixture
@@ -411,6 +409,7 @@ def test_cache_fill_directory_check_uses_pinned_commit(
 
     monkeypatch.setattr(fs, "info", info)
     monkeypatch.setattr(client.fs, "_info", AsyncMock(side_effect=info))
+    monkeypatch.setattr(fs, "commit_of", lambda resolved: resolved.revision)
 
     def read(stream, size):
         if stream.loc:
@@ -807,7 +806,7 @@ async def test_cancelled_download_waits_for_stream_cleanup(
     dst = tmp_path / "out"
     task = asyncio.create_task(
         client.get_file(
-            "hf://datasets/org/repo/a.txt", str(dst), DEFAULT_CALLBACK, "c1"
+            "hf://datasets/org/repo/a.txt", str(dst), DEFAULT_CALLBACK, "a" * 40
         )
     )
     try:
@@ -864,14 +863,16 @@ def test_download_missing_file_raises_file_not_found(
         client.put_in_cache(file)
 
 
+@pytest.mark.parametrize("size", [8, -1])
 @pytest.mark.parametrize(
     "headers",
     [{"Content-Length": "8"}, {"Content-Length": "4"}, {}],
 )
 def test_download_truncated_stream_raises_and_does_not_cache(
-    catalog, monkeypatch, hf_repositories, headers
+    catalog, monkeypatch, hf_repositories, headers, size
 ):
     client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 8}))
 
     @contextmanager
     def truncated_stream(*args, **kwargs):
@@ -887,14 +888,16 @@ def test_download_truncated_stream_raises_and_does_not_cache(
 
     monkeypatch.setattr(hf_file_system, "http_stream_backoff", truncated_stream)
     monkeypatch.setattr(hf_file_system, "hf_raise_for_status", lambda _r: None)
-    file = File(source=client.uri, path="org/repo/a.txt", size=8, version="a" * 40)
+    file = File(source=client.uri, path="org/repo/a.txt", size=size, version="a" * 40)
     with pytest.raises(OSError, match="Expected 8 bytes"):
         client.put_in_cache(file)
     assert not catalog.cache.contains(file)
 
 
 @pytest.mark.parametrize(
-    "retry_status,retry_body", [(200, b"01234567"), (206, b"4567")]
+    "retry_status,retry_body",
+    [(200, b"01234567"), (206, b"4567"), (200, b"01")],
+    ids=["full", "partial", "full-but-short"],
 )
 def test_download_retry_handles_full_200_and_partial_206(
     catalog, monkeypatch, hf_repositories, retry_status, retry_body
@@ -927,8 +930,58 @@ def test_download_retry_handles_full_200_and_partial_206(
 
     monkeypatch.setattr(hf_file_system, "http_stream_backoff", fake_stream)
     monkeypatch.setattr(hf_file_system, "hf_raise_for_status", lambda _r: None)
-    file = File(source=client.uri, path="org/repo/a.txt", size=8, version="a" * 40)
+    # the cache outlives a test: each case downloads its own file
+    path = f"org/repo/{len(retry_body)}.txt"
+    file = File(source=client.uri, path=path, size=8, version="a" * 40)
+    if retry_body == b"01":
+        with pytest.raises(OSError, match="ended before byte 4"):
+            client.put_in_cache(file)
+        assert not catalog.cache.contains(file)
+        return
     client.put_in_cache(file)
     with client.open_object(file) as f:
         assert f.read() == b"01234567"
     assert range_headers == [None, "bytes=4-"]
+
+
+def test_download_of_a_branch_file_resumes_on_one_commit(
+    catalog, monkeypatch, hf_repositories
+):
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(client, "CHUNK_SIZE", 4)
+    commit = "b" * 40
+    monkeypatch.setattr(
+        client.fs.sync_fs._api,
+        "repo_info",
+        lambda *a, **kw: SimpleNamespace(sha=commit),
+    )
+    urls = []
+
+    def interrupted(chunk_size=None):
+        yield b"old!"
+        raise RuntimeError("stream interrupted")
+
+    @contextmanager
+    def fake_stream(_method, url, **kwargs):
+        urls.append(url)
+        # the branch moves on between the two requests; its commit does not
+        body = b"old!1111" if f"/{commit}/" in url else b"new!2222"
+        yield SimpleNamespace(
+            status_code=200,
+            is_error=False,
+            headers={"Content-Length": "8"},
+            iter_bytes=(
+                interrupted if len(urls) == 1 else lambda chunk_size=None: iter([body])
+            ),
+            raise_for_status=lambda: None,
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(hf_file_system, "http_stream_backoff", fake_stream)
+    monkeypatch.setattr(hf_file_system, "hf_raise_for_status", lambda _r: None)
+    file = File(source=client.uri, path="org/repo/a.txt", size=8)
+    client.put_in_cache(file)
+    with client.open_object(file) as f:
+        assert f.read() == b"old!1111"
+    assert len(urls) == 2
+    assert all(f"/resolve/{commit}/" in url for url in urls)

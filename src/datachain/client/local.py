@@ -211,7 +211,14 @@ class FileClient(Client):
             raise FileNotFoundError(full_path)
         return int(size)
 
-    async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
+    async def get_file(
+        self,
+        lpath,
+        rpath,
+        callback,
+        version_id: str | None = None,
+        expected_size: int | None = None,
+    ):
         return self.fs.get_file(
             lpath,
             rpath,
