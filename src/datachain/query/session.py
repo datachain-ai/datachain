@@ -37,26 +37,28 @@ def is_script_run() -> bool:
 
 
 class Session:
-    """
-    Session is a context that keeps track of temporary DataChain datasets for a proper
-    cleanup. By default, a global session is created.
-
-    Temporary or ephemeral datasets are the ones created without specified name.
-    They are useful for optimization purposes and should be automatically removed.
-
-    Temp dataset has specific name format:
-        "session_<name>_<session_uuid>_<dataset_uuid>"
-    The <name> suffix is optional. Both <uuid>s are auto-generated.
-
-    Temp dataset examples:
-        session_myname_624b41_48e8b4
-        session_4b962d_2a5dff
+    """The catalog that chains use, and the scope of the temporary datasets they
+    create. A session opened with `with` is used by every call inside the block
+    that has no `session=`, and removes its temporary datasets when the block
+    ends. Calls outside any `with` use a default session, cleaned up when the
+    process exits.
 
     Parameters:
+        name (str): Letters and numbers only. Optional.
+        catalog (Catalog): The catalog to use. Defaults to the one configured
+            for the environment.
+        client_config (dict): Client configuration, such as credentials or an
+            endpoint, that the session's chains read storage with.
+        in_memory (bool): Use an in-memory catalog. What the chains save is gone
+            when the session closes.
 
-    name (str): The name of the session. Only latters and numbers are supported.
-           It can be empty.
-    catalog (Catalog): Catalog object.
+    Example:
+        ```py
+        import datachain as dc
+
+        with dc.Session("anon", client_config={"anon": True}):
+            dc.read_storage("s3://public-bucket/images/").save("images")
+        ```
     """
 
     GLOBAL_SESSION_CTX: "Session | None" = None
@@ -385,6 +387,7 @@ class Session:
         cls,
         session: "Session | None" = None,
         catalog: "Catalog | None" = None,
+        *,
         in_memory: bool = False,
     ) -> "Session":
         """The session a call without `session=` uses. Internal: to open a session,
