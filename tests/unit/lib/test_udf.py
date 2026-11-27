@@ -4,6 +4,7 @@ import pickle
 import tarfile
 import threading
 import time
+from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
@@ -29,7 +30,6 @@ from datachain.lib.udf import (
     UDFBase,
     UdfError,
     UdfRunError,
-    _PrefetchBudget,
 )
 from datachain.lib.utils import DataChainError
 from datachain.query import dataset
@@ -870,7 +870,7 @@ def test_mutated_file_in_udf_does_not_corrupt_prefetch_budget(
     ],
     ids=["map-default", "map-prefetch-2", "map-prefetch-bytes", "batch-map-default"],
 )
-def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
+def test_archive_prefetch_downloads_once_and_keeps_the_archive(
     test_session, monkeypatch, small_tar_member_data, method, settings
 ):
     data, raw = small_tar_member_data
@@ -881,23 +881,13 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
             for name in ("prefix.bin", "member.bin") * 2
         ]
     expected = [b"prefix", data] * 2
-    rows = len(members) if method == "map" else len(members) // 2
 
     downloads = 0
-    entered = admitted = 0
+    entered = 0
     both_entered = threading.Event()
-    all_admitted = threading.Event()
     removed = []
     orig_download = Client._download
     orig_remove = Cache.remove
-    orig_take = _PrefetchBudget.take
-
-    def counted_take(self, item):
-        nonlocal admitted
-        orig_take(self, item)
-        admitted += 1
-        if admitted == rows:
-            all_admitted.set()
 
     async def synced_download(self, file, *, callback=None):
         nonlocal entered
@@ -909,9 +899,8 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
     async def fake_put_in_cache(self, file, callback=None):
         nonlocal downloads
         downloads += 1
-        # a second download waits on the lock, and every row holds the archive
+        # a second download waits on the lock
         assert await asyncio.to_thread(both_entered.wait, 10)
-        assert await asyncio.to_thread(all_admitted.wait, 10)
         self.cache.store_data(file, raw)
 
     def read_storage(self, file, block_size=None):
@@ -921,7 +910,6 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
         removed.append(file.path)
         orig_remove(self, file)
 
-    monkeypatch.setattr(_PrefetchBudget, "take", counted_take)
     monkeypatch.setattr(Client, "_download", synced_download)
     monkeypatch.setattr(Client, "_put_in_cache", fake_put_in_cache)
     monkeypatch.setattr(Client, "_open_remote", read_storage)
@@ -937,7 +925,39 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
 
     assert chain.order_by("sys.id").to_values("data") == expected
     assert downloads == 1
-    assert removed == ["shard.tar"]
+    assert removed == []
+
+
+def test_archive_prefetch_keeps_archives_the_read_ahead_left(
+    test_session, monkeypatch, small_tar_member_data
+):
+    data, raw = small_tar_member_data
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        info = archive.getmember("member.bin")
+    shards = [
+        File(source="s3://bucket", path=f"{i}.tar", size=len(raw)) for i in "abcd"
+    ]
+    # each archive comes back after the 3-row read-ahead of prefetch=1 has left it
+    members = [build_tar_member(shard, info) for shard in shards * 3]
+    downloads = Counter()
+
+    async def fake_put_in_cache(self, file, callback=None):
+        downloads[file.path] += 1
+        self.cache.store_data(file, raw)
+
+    def read_storage(self, file, block_size=None):
+        raise AssertionError(f"read {file.path} from the storage")
+
+    monkeypatch.setattr(Client, "_put_in_cache", fake_put_in_cache)
+    monkeypatch.setattr(Client, "_open_remote", read_storage)
+
+    chain = (
+        dc.read_values(file=members, session=test_session)
+        .settings(prefetch=1)
+        .map(data=lambda file: file.read(), output=bytes)
+    )
+    assert chain.to_values("data") == [data] * len(members)
+    assert downloads == {f"{i}.tar": 1 for i in "abcd"}
 
 
 def test_archive_prefetch_skips_parents_over_max_size(test_session, monkeypatch):

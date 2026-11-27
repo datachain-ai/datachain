@@ -612,11 +612,12 @@ def _row_prefetch_targets(
     batch_columns: set[int] | None,
     max_size: int | None = None,
     custom_prefetch: bool = False,
-    keep_archives: bool = False,
-) -> tuple[list[File], list[File]]:
-    """Files to fetch for ``row`` and whole-file cache targets to budget/evict."""
+) -> tuple[list[File], list[tuple[File, bool]]]:
+    """Files to fetch for ``row``, and the cache targets to budget, each with
+    whether to evict it after the row. An archive stays: a later row may read
+    another of its members, and evicting it would download it again."""
     to_fetch: list[File] = []
-    targets: list[File] = []
+    targets: list[tuple[File, bool]] = []
     for obj in _row_files(row, batch_columns):
         if not obj.path:
             continue
@@ -627,8 +628,7 @@ def _row_prefetch_targets(
         if not member:  # a snapshot to evict, as the UDF may change its file
             target = obj.model_copy()
         if max_size is None or 0 < target.size <= max_size:
-            if not (member and keep_archives):
-                targets.append(target)
+            targets.append((target, not member))
             # the row's own file, so the UDF reads it as cached
             to_fetch.append(target if member and not custom_prefetch else obj)
         elif custom_prefetch:
@@ -643,6 +643,10 @@ def _remove_target(target: File) -> None:
         catalog.cache.remove(target)
     except Exception as e:  # noqa: BLE001
         logger.warning("Failed to remove prefetched item %r: %s", target.name, e)
+
+
+# a cache target, its budgeted bytes, and whether to evict it after its rows
+_Target = tuple[File, int, bool]
 
 
 class _PrefetchBudget:
@@ -664,25 +668,25 @@ class _PrefetchBudget:
             return 0
         return self.max_bytes or 0
 
-    def targets_for(self, targets: Iterable[File]) -> dict[str, tuple[File, int]]:
-        by_oid: dict[str, tuple[File, int]] = {}
-        for target in targets:
+    def targets_for(self, targets: Iterable[tuple[File, bool]]) -> dict[str, _Target]:
+        by_oid: dict[str, _Target] = {}
+        for target, evict in targets:
             oid = target.get_hash()
             size = self._target_size(target)
             prev = by_oid.get(oid)
             if prev is None or size > prev[1]:
-                by_oid[oid] = (target, size)
+                by_oid[oid] = (target, size, evict)
         return by_oid
 
-    def _added_bytes(self, item: Mapping[str, tuple[File, int]]) -> int:
-        return sum(size for oid, (_, size) in item.items() if not self.targets[oid])
+    def _added_bytes(self, item: Mapping[str, _Target]) -> int:
+        return sum(size for oid, (_, size, _) in item.items() if not self.targets[oid])
 
     def stop(self) -> None:
         with self.changed:
             self.stopped = True
             self.changed.notify_all()
 
-    def take(self, item: Mapping[str, tuple[File, int]]) -> None:
+    def take(self, item: Mapping[str, _Target]) -> None:
         with self.changed:
             while not self.stopped and (
                 self.rows >= self.max_rows
@@ -695,23 +699,21 @@ class _PrefetchBudget:
             ):
                 self.changed.wait()
             self.rows += 1
-            for oid, (_, size) in item.items():
+            for oid, (_, size, _) in item.items():
                 if not self.targets[oid]:
                     self.bytes += size
                     self.target_sizes[oid] = size
                 self.targets[oid] += 1
 
-    def give_back(
-        self, item: Mapping[str, tuple[File, int]], remove: bool = False
-    ) -> None:
+    def give_back(self, item: Mapping[str, _Target], remove: bool = False) -> None:
         with self.changed:
             self.rows -= 1
-            for oid, (target, _) in item.items():
+            for oid, (target, _, evict) in item.items():
                 self.targets[oid] -= 1
                 if not self.targets[oid]:
                     del self.targets[oid]
                     self.bytes -= self.target_sizes.pop(oid)
-                    if remove:
+                    if remove and evict:
                         _remove_target(target)
             self.changed.notify_all()
 
@@ -750,7 +752,6 @@ def _prefetch_inputs(
     prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]] | None" = (
         None
     ),
-    keep_archives: bool = False,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -773,19 +774,19 @@ def _prefetch_inputs(
     custom_prefetch = prefetch_file is not None
 
     async def fetch(
-        item: tuple[T, list[File], dict[str, tuple[File, int]]],
-    ) -> tuple[T, dict[str, tuple[File, int]]]:
+        item: tuple[T, list[File], dict[str, _Target]],
+    ) -> tuple[T, dict[str, _Target]]:
         row, files, targets = item
         await f(files)
         return row, targets
 
-    def admitted() -> Iterator[tuple[T, list[File], dict[str, tuple[File, int]]]]:
+    def admitted() -> Iterator[tuple[T, list[File], dict[str, _Target]]]:
         # Waiting here, before the read-ahead takes a row, leaves the rest of
         # the input to `parallel` peers.
         with safe_closing(prepared_inputs):
             for row in prepared_inputs:
                 files, raw_targets = _row_prefetch_targets(
-                    row, batch_columns, max_size, custom_prefetch, keep_archives
+                    row, batch_columns, max_size, custom_prefetch
                 )
                 targets = budget.targets_for(raw_targets)
                 budget.take(targets)
