@@ -487,8 +487,9 @@ class DataChain:
     def job(self) -> Job:
         """Get the job for this chain.
 
-        Returns the existing job if running in SaaS, or creates a new one if
-        running locally.
+        Returns the existing job if running in Studio, or creates a new one if
+        running locally. In the rare case of an in-memory chain, it is a job of
+        the in-memory catalog instead.
         """
         if self._settings.ephemeral:
             raise RuntimeError(
@@ -890,17 +891,21 @@ class DataChain:
 
     def _get_or_create_project(self, namespace: str, project_name: str) -> Project:
         """Get project or raise if creation not allowed."""
-        metastore = self.session.catalog.metastore
+        catalog = self.session.catalog
+        metastore = catalog.metastore
         if metastore.is_default_project(project_name, namespace):
             return metastore.default_project
         try:
             return metastore.get_project(
                 project_name,
                 namespace,
-                create=is_studio(),
+                create=is_studio() and not catalog.in_memory,
             )
         except ProjectNotFoundError as e:
-            raise ProjectCreateNotAllowedError("Creating project is not allowed") from e
+            where = " in memory" if catalog.in_memory else ""
+            raise ProjectCreateNotAllowedError(
+                f"Creating project is not allowed{where}"
+            ) from e
 
     def _record_checkpoint_reuse_access(
         self, dataset: DatasetRecord, version: str

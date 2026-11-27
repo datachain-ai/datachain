@@ -1,10 +1,13 @@
+import glob
+import os
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 import datachain as dc
 from datachain.lib.listing import get_listing
-from tests.utils import instantiate_tree
+from tests.utils import instantiate_tree, skip_if_not_sqlite
 
 DEEP_TREE = {
     "deep": {
@@ -79,6 +82,67 @@ def tmp_dir(tmp_path):
     return tmp_path
 
 
+REPORTS_TREE = {
+    "report.json": "",
+    "report1.json": "",
+    "notreport.json": "",
+    "rep dir": {"not.json": ""},
+    "r": {"port.json": ""},
+    "nested": {
+        "report.json": "",
+        "notreport.json": "",
+        "deep": {"report.json": "", "y.json": ""},
+    },
+    "a": {
+        "report.json": "",
+        "repdir": {"not.json": ""},
+        "nested": {"report.json": "", "deep": {"z.json": ""}},
+        "b": {"c": {"report.json": ""}},
+    },
+}
+
+GLOB_PATTERNS = [
+    "**/report.json",
+    "**/rep*.json",
+    "**/r?port.json",
+    "**/nested/*.json",
+    "**/rep dir/*.json",
+    "**/*d*y.json",
+    "**/nested/**/report.json",
+    "**/**/report.json",
+    "*/**/report.json",
+    "?/**/*.json",
+    "nest*/**/report.json",
+    "*/report.json",
+    "*/*/report.json",
+    "[an]*/**",
+    "**",
+]
+
+
+@pytest.fixture
+def reports_dir(tmp_path):
+    instantiate_tree(tmp_path, REPORTS_TREE)
+    return tmp_path
+
+
+@pytest.fixture(params=["read_storage", "list_storage"])
+def storage_paths(request):
+    def paths(uri, **kwargs):
+        if request.param == "read_storage":
+            return sorted(dc.read_storage(uri, **kwargs).to_values("file.path"))
+        return sorted(row.path for row in dc.list_storage(uri, **kwargs))
+
+    return paths
+
+
+def python_glob(root, pattern):
+    paths = glob.glob(f"{root}/{pattern}", recursive=True, include_hidden=True)
+    return sorted(
+        {Path(p).relative_to(root).as_posix() for p in paths if os.path.isfile(p)}
+    )
+
+
 def test_simple_wildcard(tmp_dir):
     result = dc.read_storage(f"{tmp_dir}/deep/level1/temp/*.tmp")
     names = {f.name for f in result.to_values("file")}
@@ -89,6 +153,82 @@ def test_recursive(tmp_dir):
     result = dc.read_storage(f"{tmp_dir}/deep/**/*.mp3")
     files = {f.name for f in result.to_values("file")}
     assert files == {"audio.mp3", "song1.mp3", "track2.mp3"}
+
+
+@pytest.mark.parametrize("recursive", [True, False])
+@pytest.mark.parametrize("pattern", GLOB_PATTERNS)
+def test_pattern_selects_the_files_python_glob_selects(
+    reports_dir, storage_paths, pattern, recursive
+):
+    expected = python_glob(reports_dir, pattern)
+    uri = f"{reports_dir}/{pattern}"
+    assert storage_paths(uri, recursive=recursive) == expected
+
+
+def test_folder_brace_alternative_without_recursion_lists_one_level(
+    reports_dir, storage_paths
+):
+    assert storage_paths(f"{reports_dir}/{{,*/report.json}}", recursive=False) == [
+        "a/report.json",
+        "nested/report.json",
+        "notreport.json",
+        "report.json",
+        "report1.json",
+    ]
+
+
+@pytest.mark.parametrize(
+    "recursive,expected",
+    [
+        (
+            True,
+            [
+                "nested/deep/report.json",
+                "nested/deep/y.json",
+                "nested/notreport.json",
+                "nested/report.json",
+            ],
+        ),
+        (False, ["nested/notreport.json", "nested/report.json"]),
+    ],
+)
+def test_pattern_ending_in_slash_reads_the_folders_it_matches(
+    reports_dir, storage_paths, recursive, expected
+):
+    assert storage_paths(f"{reports_dir}/nest*/", recursive=recursive) == expected
+
+
+def test_overlapping_brace_alternatives_return_each_file_once(
+    reports_dir, storage_paths
+):
+    assert storage_paths(f"{reports_dir}/*.{{json,js*}}") == [
+        "notreport.json",
+        "report.json",
+        "report1.json",
+    ]
+
+
+def test_thousand_brace_alternatives_of_one_folder(reports_dir, storage_paths):
+    assert storage_paths(f"{reports_dir}/report{{1..1000}}.js?n") == ["report1.json"]
+
+
+@skip_if_not_sqlite
+def test_thousand_brace_patterns_after_limiting_sqlite_variables(
+    reports_dir, test_session
+):
+    db = test_session.catalog.warehouse.db.db
+    db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    uri = f"{reports_dir}/**/report{{,{{1..1000}}}}.js?n"
+    chain = dc.read_storage(uri, session=test_session)
+    assert sorted(chain.to_values("file.path")) == [
+        "a/b/c/report.json",
+        "a/nested/report.json",
+        "a/report.json",
+        "nested/deep/report.json",
+        "nested/report.json",
+        "report.json",
+        "report1.json",
+    ]
 
 
 def test_recursive_patterns_ext(tmp_dir):
