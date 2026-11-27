@@ -1,3 +1,4 @@
+import contextlib
 import datetime as dt
 import enum
 import hashlib
@@ -33,6 +34,7 @@ from datachain.error import (
     InvalidNamespaceNameError,
     InvalidProjectNameError,
     ProjectCreateNotAllowedError,
+    ProjectNotFoundError,
 )
 from datachain.func import string
 from datachain.lib.arrow import ArrowRow
@@ -175,7 +177,6 @@ def test_pandas_conversion(test_session):
     assert df_equal(df1, df)
 
 
-@skip_if_not_sqlite
 def test_pandas_conversion_in_memory():
     df = pd.DataFrame(DF_DATA)
     chain = dc.read_pandas(df, in_memory=True)
@@ -371,7 +372,6 @@ def test_from_features_basic(test_session):
     assert set(ds.schema.values()) == {File}
 
 
-@skip_if_not_sqlite
 def test_read_records_basic_in_memory():
     ds = dc.read_records([{"seed": 0}], schema={"seed": int}, in_memory=True)
     assert ds.session.catalog.in_memory is True
@@ -381,12 +381,118 @@ def test_read_records_basic_in_memory():
 
     ds_name = "my_ds"
     ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name)
+    ds = dc.read_dataset(name=ds_name, in_memory=True)
 
     assert isinstance(ds._query.feature_schema, dict)
     assert isinstance(ds.signals_schema, SignalSchema)
     assert ds.schema.keys() == {"file"}
     assert set(ds.schema.values()) == {File}
+
+
+def test_read_json_in_memory_inside_persistent_session_lists_nothing_there(
+    catalog_tmpfile, tmp_dir
+):
+    results = tmp_dir / "results"
+    results.mkdir()
+    (results / "r1.json").write_text('{"id": 1}')
+
+    with dc.Session("persistent", catalog=catalog_tmpfile):
+        chain = dc.read_json(results.as_uri(), in_memory=True)
+        assert chain.to_values("json.id") == [1]
+
+    assert catalog_tmpfile.listings() == []
+
+
+def test_read_storage_in_memory_inside_configured_session_uses_no_config(tmp_dir):
+    with dc.Session("p", client_config={"anon": True}):
+        chain = dc.read_storage(tmp_dir.as_uri(), in_memory=True)
+
+    assert chain.session.catalog.client_config == {}
+
+
+def test_list_storage_in_memory_inside_configured_session_saves_with_no_config(
+    tmp_dir,
+):
+    with dc.Session("p", client_config={"anon": True}):
+        listing = dc.list_storage(tmp_dir.as_uri(), in_memory=True)
+
+        assert listing.session.catalog.client_config == {}
+
+
+def test_read_storage_inside_configured_in_memory_session_uses_its_config(tmp_dir):
+    with dc.Session("m", client_config={"anon": True}, in_memory=True):
+        chain = dc.read_storage(tmp_dir.as_uri(), in_memory=True)
+
+    assert chain.session.catalog.client_config == {"anon": True}
+
+
+def test_map_in_memory_with_studio_workers_and_parallel_defaults_runs(monkeypatch):
+    monkeypatch.setenv(
+        "DATACHAIN_DISTRIBUTED", "tests.unit.test_catalog_loader.DistributedClass"
+    )
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED_DISABLED", raising=False)
+    monkeypatch.setenv("DATACHAIN_SETTINGS_WORKERS", "2")
+    monkeypatch.setenv("DATACHAIN_SETTINGS_PARALLEL", "2")
+
+    chain = dc.read_values(x=[1, 2, 3], in_memory=True).map(
+        y=lambda x: x + 1, output=int
+    )
+
+    assert sorted(chain.to_values("y")) == [2, 3, 4]
+
+
+def test_map_in_memory_with_explicit_workers_raises():
+    chain = (
+        dc.read_values(x=[1, 2, 3], in_memory=True)
+        .settings(workers=2)
+        .map(y=lambda x: x + 1, output=int)
+    )
+
+    with pytest.raises(RuntimeError, match="In-memory databases cannot be used"):
+        chain.to_values("y")
+
+
+def test_map_in_memory_with_explicit_parallel_raises():
+    chain = (
+        dc.read_values(x=[1, 2, 3], in_memory=True)
+        .settings(parallel=2)
+        .map(y=lambda x: x + 1, output=int)
+    )
+
+    with pytest.raises(RuntimeError, match="In-memory databases cannot be used"):
+        chain.to_values("y")
+
+
+def test_union_in_memory_with_persistent_chain_raises(test_session):
+    in_memory = dc.read_values(x=[1], in_memory=True)
+    persistent = dc.read_values(x=[1], session=test_session)
+
+    with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
+        in_memory.union(persistent)
+
+
+def test_union_persistent_with_in_memory_chain_raises(test_session):
+    in_memory = dc.read_values(x=[1], in_memory=True)
+    persistent = dc.read_values(x=[1], session=test_session)
+
+    with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
+        persistent.union(in_memory)
+
+
+def test_merge_in_memory_with_persistent_chain_raises(test_session):
+    in_memory = dc.read_values(x=[1], in_memory=True)
+    persistent = dc.read_values(x=[1], session=test_session)
+
+    with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
+        in_memory.merge(persistent, on="x")
+
+
+def test_subtract_in_memory_with_persistent_chain_raises(test_session):
+    in_memory = dc.read_values(x=[1], in_memory=True)
+    persistent = dc.read_values(x=[1], session=test_session)
+
+    with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
+        in_memory.subtract(persistent, on="x")
 
 
 def test_read_records_and_gen(test_session):
@@ -663,7 +769,14 @@ def test_datasets_studio(studio_datasets, test_session):
     assert len(datasets) == 0
 
 
-@skip_if_not_sqlite
+def test_describe_in_memory_after_in_memory_save_finds_it():
+    dc.read_values(x=[1, 2], in_memory=True).save("in_memory_ds")
+
+    description = dc.describe("in_memory_ds", in_memory=True)
+
+    assert description.selected_version.num_objects == 2
+
+
 def test_datasets_in_memory():
     ds = dc.datasets(column="dataset", in_memory=True)
     assert ds.session.catalog.in_memory is True
@@ -672,9 +785,9 @@ def test_datasets_in_memory():
     datasets = [d for d in ds.to_values("dataset") if d.name == "fibonacci"]
     assert len(datasets) == 0
 
-    dc.read_values(fib=[1, 1, 2, 3, 5, 8]).save("fibonacci")
+    dc.read_values(fib=[1, 1, 2, 3, 5, 8], in_memory=True).save("fibonacci")
 
-    ds = dc.datasets(column="dataset")
+    ds = dc.datasets(column="dataset", in_memory=True)
     assert ds.session.catalog.in_memory is True
     assert ds.session.catalog.metastore.db.db_file == ":memory:"
     assert ds.session.catalog.warehouse.db.db_file == ":memory:"
@@ -682,7 +795,7 @@ def test_datasets_in_memory():
     assert len(datasets) == 1
     assert datasets[0].num_objects == 6
 
-    ds = dc.datasets(column="foo")
+    ds = dc.datasets(column="foo", in_memory=True)
     assert ds.session.catalog.in_memory is True
     assert ds.session.catalog.metastore.db.db_file == ":memory:"
     assert ds.session.catalog.warehouse.db.db_file == ":memory:"
@@ -870,6 +983,18 @@ def test_listings_read_listing_dataset_with_subpath(test_session, tmp_dir):
     assert files[0].source == tmp_dir.as_uri()
 
 
+def test_read_listing_dataset_in_memory_after_in_memory_listing_reads_it(tmp_dir):
+    (tmp_dir / "a.txt").write_text("a")
+    uri = tmp_dir.as_uri()
+    dc.read_storage(uri, in_memory=True).exec()
+    ds_name, _, _ = parse_listing_uri(uri)
+
+    chain, listing_version = read_listing_dataset(ds_name, in_memory=True)
+
+    assert listing_version.num_objects == 1
+    assert chain.to_values("file.path") == ["a.txt"]
+
+
 def test_preserve_feature_schema(test_session):
     ds = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
     ds = ds.gen(
@@ -902,7 +1027,6 @@ def test_from_features_simple_types(test_session):
     assert df["odds"].tolist() == values
 
 
-@skip_if_not_sqlite
 def test_from_features_simple_types_in_memory():
     fib = [1, 1, 2, 3, 5, 8]
     values = ["odd" if num % 2 else "even" for num in fib]
@@ -1827,6 +1951,60 @@ def test_read_dataset_name_version(test_session):
     assert chain.version
 
 
+@contextlib.contextmanager
+def _trace_sqlite_statements(session):
+    executed: list[str] = []
+    conns = {session.catalog.metastore.db.db, session.catalog.warehouse.db.db}
+    for conn in conns:
+        conn.set_trace_callback(executed.append)
+    try:
+        yield executed
+    finally:
+        for conn in conns:
+            conn.set_trace_callback(None)
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [(None, 3), ("1.0.0", 1), (1, 2), (">=1.0.0,<2.0.0", 2)],
+    ids=["latest", "exact", "major-int", "range"],
+)
+def test_read_dataset_to_list_runs_two_statements(test_session, version, expected):
+    dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
+    dc.read_values(num=[2], session=test_session).save("selected", version="1.10.0")
+    dc.read_values(num=[3], session=test_session).save("selected", version="2.0.0")
+
+    with _trace_sqlite_statements(test_session) as executed:
+        rows = dc.read_dataset(
+            "selected", version=version, session=test_session
+        ).to_list("num")
+
+    assert rows == [(expected,)]
+    assert len(executed) == 2
+
+    test_session.catalog.warehouse.db.metadata.clear()
+    with _trace_sqlite_statements(test_session) as cold_executed:
+        cold_rows = dc.read_dataset(
+            "selected", version=version, session=test_session
+        ).to_list("num")
+
+    assert cold_rows == [(expected,)]
+    assert len(cold_executed) == 3
+
+
+@skip_if_not_sqlite
+def test_save_in_default_project_skips_projects_query(test_session):
+    dc.read_values(num=[1, 2], session=test_session).save("proj_shortcut_src")
+
+    with _trace_sqlite_statements(test_session) as executed:
+        dc.read_dataset("proj_shortcut_src", session=test_session).filter(
+            dc.C("num") == 1
+        ).save("proj_shortcut_out")
+
+    assert not any("FROM projects" in sql for sql in executed)
+
+
 def test_chain_of_maps(test_session):
     chain = (
         dc.read_values(my_n=features_nested, session=test_session)
@@ -1932,7 +2110,6 @@ def test_parse_tabular(tmp_dir, test_session):
     assert df_equal(df1, df)
 
 
-@skip_if_not_sqlite
 def test_parse_tabular_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
@@ -2002,14 +2179,12 @@ def test_parse_tabular_partitions(tmp_dir, test_session):
 
 
 def test_parse_tabular_no_files(test_session):
-    chain = dc.read_values(
-        f1=features, num=range(len(features)), session=test_session, in_memory=True
-    )
+    chain = dc.read_values(f1=features, num=range(len(features)), session=test_session)
     with pytest.raises(DatasetPrepareError):
         chain.parse_tabular()
 
     schema = {"file": File, "my_col": int}
-    chain = dc.read_records([], schema=schema, session=test_session, in_memory=True)
+    chain = dc.read_records([], schema=schema, session=test_session)
 
     with pytest.raises(DatasetPrepareError):
         chain.parse_tabular()
@@ -2125,7 +2300,6 @@ def test_to_read_csv(tmp_dir, test_session):
     assert df_equal(df1, df)
 
 
-@skip_if_not_sqlite
 def test_read_csv_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.csv"
@@ -2135,7 +2309,6 @@ def test_read_csv_in_memory(tmp_dir):
     assert df_equal(df1, df)
 
 
-@skip_if_not_sqlite
 def test_to_read_csv_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
     dc_to = dc.read_pandas(df, in_memory=True)
@@ -3698,7 +3871,6 @@ def test_read_csv_with_output_named_source_names_new_source_c0_source(
     assert value == "s3"
 
 
-@skip_if_not_sqlite
 def test_read_parquet_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
@@ -3858,7 +4030,6 @@ def test_to_read_parquet_two_top_level_features(tmp_dir, test_session, chunk_siz
         assert nested == features_nested[n]
 
 
-@skip_if_not_sqlite
 def test_parallel_in_memory():
     prefix = "t & "
     vals = ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
@@ -4590,7 +4761,6 @@ def test_count_with_empty_results(test_session):
     assert chain.count() == 5
 
 
-@skip_if_not_sqlite
 def test_count_in_memory(test_session):
     """Test count functionality with in-memory database."""
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], in_memory=True)
@@ -4760,7 +4930,6 @@ def test_distinct_with_all_duplicates(test_session):
     assert distinct_both.to_values("categories") == ["A"]
 
 
-@skip_if_not_sqlite
 def test_distinct_in_memory(test_session):
     """Test distinct functionality with in-memory database."""
     chain = dc.read_values(numbers=[1, 2, 2, 3, 3, 3], in_memory=True)
@@ -5275,7 +5444,6 @@ def test_filter_with_boolean_nested_model(test_session):
     assert rejected_in.to_values("records.name") == ["doc-2"]
 
 
-@skip_if_not_sqlite
 def test_filter_in_memory(test_session):
     """Test filter functionality with in-memory database."""
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], in_memory=True)
@@ -7213,6 +7381,27 @@ def test_save_create_project_not_allowed(test_session, is_studio):
         dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session).save(
             "dev.numbers.fibonacci"
         )
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_save_in_memory_in_studio_to_new_project_raises(is_studio):
+    chain = dc.read_values(x=[1], in_memory=True)
+    with pytest.raises(ProjectCreateNotAllowedError, match="not allowed in memory"):
+        chain.save("team.proj.d")
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_save_in_memory_in_studio_to_personal_namespace_raises(is_studio):
+    chain = dc.read_values(x=[1], in_memory=True)
+    with pytest.raises(ProjectCreateNotAllowedError, match="not allowed in memory"):
+        chain.save("@ivan.default.d")
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_move_dataset_in_memory_in_studio_to_new_project_raises(is_studio):
+    dc.read_values(x=[1], in_memory=True).save("d")
+    with pytest.raises(ProjectNotFoundError):
+        dc.move_dataset("d", "team.proj.d", in_memory=True)
 
 
 def test_save_regenerates_sys_ids_with_order_by(test_session):

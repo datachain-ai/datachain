@@ -162,6 +162,14 @@ def clean_session() -> Generator[None, None, None]:
     Session.cleanup_for_tests()
 
 
+@pytest.fixture
+def clean_job_state(monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    reset_session_job_state()
+    yield
+    reset_session_job_state()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def clean_environment(
     monkeypatch_session: MonkeyPatch,
@@ -1372,18 +1380,17 @@ def remote_project(remote_namespace):
 
 
 @pytest.fixture
-def compressed_parquet_data():
+def parquet_data():
     """
-    Factory fixture that creates lz4-compressed parquet for datasets.
+    Factory fixture that creates parquet for datasets.
     Returns a function that can be called with different data.
     """
     import io
     from datetime import datetime
 
-    import lz4.frame
     import pandas as pd
 
-    def create_compressed_parquet(data, src_uri=None):
+    def create_parquet(data, src_uri=None):
         def _adapt_row(row):
             """
             Adjusting row values to match remote response
@@ -1409,9 +1416,9 @@ def compressed_parquet_data():
         buffer = io.BytesIO()
         df.to_parquet(buffer)
 
-        return lz4.frame.compress(buffer.getvalue())
+        return buffer.getvalue()
 
-    return create_compressed_parquet
+    return create_parquet
 
 
 @pytest.fixture
@@ -1484,14 +1491,14 @@ def numbers_table(warehouse, numbers_ds) -> Generator[sqlalchemy.Table, None, No
 
 
 @pytest.fixture
-def mock_parquet_data(compressed_parquet_data, dog_entries, version="1.0.0"):
-    return compressed_parquet_data(dog_entries(version))
+def mock_parquet_data(parquet_data, dog_entries, version="1.0.0"):
+    return parquet_data(dog_entries(version))
 
 
 @pytest.fixture
-def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_catalog):
+def mock_parquet_data_cloud(parquet_data, dog_entries, cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
-    return compressed_parquet_data(dog_entries("1.0.0"), src_uri)
+    return parquet_data(dog_entries("1.0.0"), src_uri)
 
 
 @pytest.fixture
