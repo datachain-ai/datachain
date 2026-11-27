@@ -390,8 +390,6 @@ class Session:
         """The session a call without `session=` uses. Internal: to open a session,
         or to read with another `client_config`, use `dc.Session(name, ...)`.
 
-        :meta private:
-
         Parameters:
             session (Session): Returned as is when given.
             catalog (Catalog): The catalog of the global session, if this call

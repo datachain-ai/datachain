@@ -274,8 +274,6 @@ plugins:
       handlers:
         python:
           options:
-            extensions:
-              - docs/hide_private.py:HidePrivate
             show_submodules: no
             docstring_options:
               ignore_init_summary: true

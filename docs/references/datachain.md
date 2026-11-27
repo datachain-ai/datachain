@@ -90,5 +90,7 @@ C("file.size") // 1024
 ::: datachain.lib.utils.DataChainError
 
 ::: datachain.query.session.Session
+    options:
+      members: [active, get_job, get_or_create_job]
 
 ::: datachain.lib.dc.Sys
