@@ -157,6 +157,26 @@ class PinnedHfFileSystem(HfFileSystem):
         with _translate_auth_error():
             return super().get_file(rpath, *args, **kwargs)
 
+    def current_etag(self, path: str, revision: str | None = None) -> str:
+        """The path's blob ID, or Xet hash in a bucket, asked of the Hub, not of
+        a listing the SDK cached."""
+        found: list[Any]
+        with _translate_auth_error():
+            resolved = self.resolve_path(path, revision=revision)
+            if bucket_id := getattr(resolved, "bucket_id", None):
+                found = [*self._api.get_bucket_paths_info(bucket_id, [resolved.path])]
+            else:
+                found = self._api.get_paths_info(
+                    resolved.repo_id,
+                    resolved.path_in_repo,
+                    revision=resolved.revision,
+                    repo_type=resolved.repo_type,
+                )
+        if not found:
+            raise FileNotFoundError(path)
+        info = found[0]
+        return getattr(info, "blob_id", None) or getattr(info, "xet_hash", None) or ""
+
     def info(self, path, *args, **kwargs):
         kwargs.setdefault("expand_info", bool(getattr(self, "expand_info", False)))
         with _translate_auth_error():

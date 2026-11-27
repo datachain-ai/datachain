@@ -192,15 +192,10 @@ class HfClient(Client):
         )
 
     async def get_current_etag(self, file: "File") -> str:
-        full_path = file.get_fs_path()
-        info = await self.fs._info(full_path, **self._version_kwargs(file.version))
-        etag = info.get("blob_id") or info.get("xet_hash")
-        if etag is None:
-            info = await self.fs._info(
-                full_path, **self._file_info_kwargs(file.version)
-            )
-            etag = info.get("blob_id") or info.get("xet_hash")
-        return etag or ""
+        # a listing fills the SDK's cache, and a branch or a bucket can change
+        return await asyncio.to_thread(
+            self.fs.sync_fs.current_etag, file.get_fs_path(), file.version or None
+        )
 
     def _is_bucket(self, info: dict[str, Any] | None = None) -> bool:
         return (
