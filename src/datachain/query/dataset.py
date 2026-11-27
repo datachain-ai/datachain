@@ -78,7 +78,7 @@ from datachain.query.schema import DEFAULT_DELIMITER, C, ColumnExpr
 from datachain.query.session import Session
 from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
-from datachain.sql.types import SQLType
+from datachain.sql.types import SQLType, String
 from datachain.utils import (
     determine_processes,
     determine_workers,
@@ -654,6 +654,17 @@ class UDFStep(Step, ABC):
         to select
         """
 
+    def _workers_and_processes(
+        self, catalog: "Catalog", rows_total: int
+    ) -> tuple[bool | int, bool | int]:
+        workers = determine_workers(self.workers, rows_total=rows_total)
+        processes = determine_processes(self.parallel, rows_total=rows_total)
+        if catalog.in_memory:
+            # Defaults from the environment don't apply in memory.
+            workers = workers if self.workers else False
+            processes = processes if self.parallel is not None else False
+        return workers, processes
+
     def populate_udf_output_table(  # noqa: PLR0915
         self,
         udf_table: "Table",
@@ -687,8 +698,7 @@ class UDFStep(Step, ABC):
             get_udf_distributor_class,
         )
 
-        workers = determine_workers(self.workers, rows_total=rows_to_process)
-        processes = determine_processes(self.parallel, rows_total=rows_to_process)
+        workers, processes = self._workers_and_processes(catalog, rows_to_process)
         logger.debug(
             "UDF(%s): Processing %d rows (workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
@@ -1833,6 +1843,7 @@ class RegenerateSystemColumns(Step):
 
 
 _SYS = frozenset({"sys__id", "sys__rand"})
+_SYS_NAMES = _SYS | {"rowid", "_rowid_", "oid"}  # SQLite's names of sys__id
 
 
 @frozen
@@ -2141,6 +2152,8 @@ class SQLJoin(Step):
     inner: bool
     full: bool
     rname: str
+    left_tags: tuple[tuple[str, str], ...] = ()
+    right_tags: tuple[tuple[str, str], ...] = ()
 
     @staticmethod
     def _split_db_name(name: str) -> tuple[str, str]:
@@ -2165,6 +2178,8 @@ class SQLJoin(Step):
             str(self.inner).encode(),
             str(self.full).encode(),
             self.rname.encode("utf-8"),
+            repr(self.left_tags).encode("utf-8"),
+            repr(self.right_tags).encode("utf-8"),
         ]
 
         return hashlib.sha256(b"".join(parts)).hexdigest()
@@ -2188,15 +2203,28 @@ class SQLJoin(Step):
             query2=self.query2.replace_sources(replacements),
         )
 
-    def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
+    def get_query(
+        self,
+        dq: "DatasetQuery",
+        temp_tables: list[str],
+        tags: tuple[tuple[str, str], ...] = (),
+    ) -> sa.Subquery:
         temp_tables_before = len(dq.temp_table_names)
         cols = _expr_columns(
             p
             for p in ensure_sequence(self.predicates)
             if isinstance(p, (str, ColumnElement))
         )
-        uses_sys = cols is None or bool(cols & _SYS)
+        uses_sys = _names_sys(cols)
         query = dq.apply_steps(uses_sys=uses_sys).select()
+        if tags:
+            tag_type = SQLType.as_nullable(String())
+            query = query.add_columns(
+                *(
+                    sqlalchemy.type_coerce(sa.literal(tag), tag_type).label(col)
+                    for col, tag in tags
+                )
+            )
         temp_tables.extend(dq.temp_table_names[temp_tables_before:])
 
         if not any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps):
@@ -2285,8 +2313,8 @@ class SQLJoin(Step):
         state: "QueryState",
         **kwargs,
     ) -> StepResult:
-        q1 = self.get_query(self.query1, temp_tables)
-        q2 = self.get_query(self.query2, temp_tables)
+        q1 = self.get_query(self.query1, temp_tables, self.left_tags)
+        q2 = self.get_query(self.query2, temp_tables, self.right_tags)
 
         q1_columns = _drop_system_columns(q1.c)
         existing_column_names = {c.name for c in q1_columns}
@@ -2535,10 +2563,13 @@ def _used_columns(steps: Sequence[Step]) -> set[str] | None:
     return used
 
 
+def _names_sys(cols: set[str] | None) -> bool:
+    # in any case: SQLite resolves column names case-insensitively
+    return cols is None or any(c.lower() in _SYS_NAMES for c in cols)
+
+
 def _uses_sys(step: Step) -> bool:
-    if (cols := step.used_columns()) is None:
-        return True
-    return bool(cols & _SYS)
+    return _names_sys(step.used_columns())
 
 
 def _read_filters(steps: Sequence[Step]) -> list[Any]:
@@ -3145,6 +3176,14 @@ class DatasetQuery:
         query.steps.append(SQLGroupBy(cols, group_by))
         return query
 
+    def _check_same_database(self, other: "DatasetQuery") -> None:
+        """An in-memory chain and a persistent one live in different databases."""
+        if self.catalog.in_memory != other.catalog.in_memory:
+            raise ValueError(
+                "Cannot combine an in-memory chain with a persistent one; "
+                "read both with the same in_memory"
+            )
+
     def _session_reading(self, other: "DatasetQuery") -> Session:
         """This query's session, reading files of `other`'s storage sources
         with the client configs they were listed with."""
@@ -3157,6 +3196,7 @@ class DatasetQuery:
         return self.session._with_catalog(catalog)
 
     def union(self, dataset_query: "DatasetQuery") -> "DatasetQuery":
+        self._check_same_database(dataset_query)
         left = self.clone()
         right = dataset_query.clone()
         return DatasetQuery(
@@ -3172,7 +3212,10 @@ class DatasetQuery:
         inner=False,
         full=False,
         rname="right_",
+        left_tags: tuple[tuple[str, str], ...] = (),
+        right_tags: tuple[tuple[str, str], ...] = (),
     ) -> "DatasetQuery":
+        self._check_same_database(dataset_query)
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
             # for use case where we join with itself, e.g dogs.join(dogs, "name")
@@ -3187,7 +3230,19 @@ class DatasetQuery:
         )
         return DatasetQuery(
             session=self._session_reading(dataset_query),
-            steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
+            steps=[
+                SQLJoin(
+                    self.catalog,
+                    left,
+                    right,
+                    predicates,
+                    inner,
+                    full,
+                    rname,
+                    left_tags,
+                    right_tags,
+                )
+            ],
             checkpoints_enabled=self.checkpoints_enabled,
         )
 
@@ -3259,6 +3314,7 @@ class DatasetQuery:
         on: Sequence[tuple[str, str]],
         presence: Sequence[tuple[KeyPresence, KeyPresence]] = (),
     ) -> "Self":
+        self._check_same_database(dq)
         query = self.clone()
         query.steps.append(Subtract(dq, self.catalog, on=on, presence=presence))
         return query

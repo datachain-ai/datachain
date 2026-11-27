@@ -850,6 +850,13 @@ def test_read_parquet_filter_preserves_sys_id_when_filtered(rows_parquet, test_s
     ]
 
 
+def test_read_parquet_filter_leaves_named_bind_to_sql(rows_parquet, test_session):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    # every parameter of one name takes the last value at execution
+    first, last = sqlalchemy.bindparam("a", 3), sqlalchemy.bindparam("a", 2)
+    assert chain.filter(C("a") == first, C("a") == last).to_values("b") == [20]
+
+
 def test_read_parquet_filter_disabled_on_literal_column(rows_parquet, test_session):
     chain = dc.read_parquet(rows_parquet, session=test_session)
     assert chain.filter(

@@ -2306,6 +2306,23 @@ def test_to_read_jsonl_remote(cloud_test_catalog_upload):
     assert df_equal(df1, df)
 
 
+@pytest.mark.filterwarnings("ignore::pydantic.warnings.PydanticDeprecatedSince20")
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_json_with_client_config_reads_its_schema_with_that_config(
+    cloud_test_catalog_upload,
+):
+    ctc = cloud_test_catalog_upload
+    path = f"{ctc.src_uri}/test.json"
+    dc.read_values(first_name=["Alice"], session=ctc.session).to_json(path)
+    unreachable = ctc.catalog.copy()
+    unreachable.client_config = _UNREACHABLE
+
+    with dc.Session("unreachable", catalog=unreachable):
+        chain = dc.read_json(path, client_config=ctc.client_config)
+        assert chain.to_values("json.first_name") == ["Alice"]
+
+
 def test_read_pandas_multiindex(test_session):
     # Create a DataFrame with MultiIndex columns
     header = pd.MultiIndex.from_tuples(

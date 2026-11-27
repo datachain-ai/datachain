@@ -36,6 +36,15 @@ def test_hf():
     assert row.pokemon == "bulbasaur"
 
 
+def test_read_hf_in_memory_runs_in_memory():
+    ds = Dataset.from_dict({"pokemon": ["bulbasaur", "squirtle"]})
+
+    chain = dc.read_hf(ds, in_memory=True)
+
+    assert chain.session.catalog.in_memory
+    assert sorted(chain.to_values("pokemon")) == ["bulbasaur", "squirtle"]
+
+
 def test_hf_split():
     # Space in the column name should be normalized
     ds_train = Dataset.from_dict({"pok emon": ["bulbasaur", "squirtle"]})

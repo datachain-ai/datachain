@@ -34,7 +34,8 @@ def read_values(
     Parameters:
         session: Session to use for the chain.
         settings: Settings to use for the chain.
-        in_memory: If True, creates an in-memory session. Defaults to False.
+        in_memory: If True, the chain uses the in-memory session, so what it
+            saves is gone when the process exits. Defaults to False.
         output: Signal types as a dictionary of names to types, covering every
             signal. Omit to infer each type from the values: a `None` among them
             makes the type optional, e.g. `float | None`.
