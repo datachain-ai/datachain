@@ -3,6 +3,7 @@ import functools
 import posixpath
 import re
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from datachain.lib.file import File, FileRow
@@ -129,8 +130,8 @@ class HfClient(Client):
     def _list(
         self,
         prefix: str,
-        emit=lambda _: None,
-        stop: threading.Event | None = None,
+        emit: Callable[[list[FileRow]], None],
+        stop: threading.Event,
     ) -> None:
         prefix = prefix.strip("/")
         path = f"{self.name}/{prefix}".rstrip("/")
@@ -148,7 +149,7 @@ class HfClient(Client):
         page: list[FileRow] = []
         matched = False
         for name, info in found.items():
-            if stop is not None and stop.is_set():
+            if stop.is_set():
                 return
             if name == path:
                 info = fs.info(name, refresh=True, **expand)

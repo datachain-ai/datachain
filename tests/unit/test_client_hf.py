@@ -11,7 +11,7 @@ from urllib.parse import unquote
 import httpx
 import pytest
 from fsspec.asyn import sync
-from huggingface_hub import hf_file_system
+from huggingface_hub import HfApi, hf_file_system
 from huggingface_hub.hf_api import RepoFile
 from huggingface_hub.hf_file_system import HfFileSystemFile
 from huggingface_hub.utils import (
@@ -172,57 +172,53 @@ async def _collect_hf_listing(client, prefix):
     return [file async for page in client.scandir(prefix) for file in page]
 
 
-def test_recursive_listing_accepts_single_files_and_empty_directories(
-    catalog, monkeypatch, hf_repositories
-):
+def test_recursive_listing_of_a_single_file(catalog, monkeypatch, hf_repositories):
     client = HfClient("datasets", {"token": False}, catalog.cache)
     fs = client.fs.sync_fs
     date = datetime(2024, 10, 12, tzinfo=UTC)
     monkeypatch.setattr(
-        fs,
-        "find",
-        lambda *a, **kw: {"datasets/org/repo@main/file": {}},
+        fs, "find", lambda *a, **kw: {"datasets/org/repo@main/file": {}}
     )
-    info_calls = []
-
-    def fake_info(path, *a, **kw):
-        info_calls.append((path, kw))
-        return {
+    info = Mock(
+        return_value={
             "size": 4,
             "blob_id": "blob",
             "last_commit": SimpleNamespace(oid="c1", date=date),
         }
-
-    monkeypatch.setattr(fs, "info", fake_info)
+    )
+    monkeypatch.setattr(fs, "info", info)
     rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
     assert [(r.path, r.version) for r in rows] == [("org/repo@main/file", "c1")]
-    assert info_calls[-1] == (
-        "datasets/org/repo@main/file",
-        {"refresh": True, "expand_info": True},
+    info.assert_called_with(
+        "datasets/org/repo@main/file", refresh=True, expand_info=True
     )
 
+
+@pytest.mark.parametrize(
+    "info,error",
+    [({"type": "directory"}, None), (FileNotFoundError("missing"), FileNotFoundError)],
+    ids=["empty-directory", "missing"],
+)
+def test_recursive_listing_with_nothing_found(
+    catalog, monkeypatch, hf_repositories, info, error
+):
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    fs = client.fs.sync_fs
     monkeypatch.setattr(fs, "find", lambda *a, **kw: {})
-    info_calls.clear()
-    monkeypatch.setattr(
-        fs,
-        "info",
-        lambda path, *a, **kw: (info_calls.append((path, kw)), {"type": "directory"})[
-            1
-        ],
-    )
-    assert (
-        sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
-        == []
-    )
-    assert info_calls == [("datasets/org/repo@main/file", {"refresh": True})]
+    check = Mock(side_effect=[info])
+    monkeypatch.setattr(fs, "info", check)
 
-    monkeypatch.setattr(
-        fs,
-        "info",
-        Mock(side_effect=FileNotFoundError("missing")),
-    )
-    with pytest.raises(FileNotFoundError):
-        sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
+    def listing():
+        return sync(
+            get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/dir")
+        )
+
+    if error:
+        with pytest.raises(error):
+            listing()
+    else:
+        assert listing() == []
+    check.assert_called_once_with("datasets/org/repo@main/dir", refresh=True)
 
 
 def test_recursive_listing_follows_the_hubs_pages(catalog, hf_repositories, hub):
@@ -230,6 +226,8 @@ def test_recursive_listing_follows_the_hubs_pages(catalog, hf_repositories, hub)
     asked = []
 
     def serve(request):
+        if "/tree/" not in request.url.path:
+            return None
         asked.append(str(request.url))
         if request.url.params.get("cursor") == "page2":
             return http.Response(
@@ -257,6 +255,8 @@ def test_each_listing_reads_the_hubs_current_tree(catalog, hf_repositories, hub)
     blobs = ["old"]
 
     def serve(request):
+        if "/tree/" not in request.url.path:
+            return None
         return http.Response(200, json=[_tree_entry("a.txt", blobs[-1])])
 
     http = hub(serve)
@@ -297,6 +297,9 @@ def test_a_cancelled_listing_frees_its_thread(catalog, monkeypatch, hf_repositor
     assert done.wait(5)
 
 
+@pytest.mark.skipif(
+    not hasattr(HfApi, "list_bucket_tree"), reason="the SDK has no buckets"
+)
 def test_recursive_listing_bucket_preserves_xet_hash_and_mtime_and_skips_siblings(
     catalog, monkeypatch, hf_repositories
 ):
@@ -308,45 +311,27 @@ def test_recursive_listing_bucket_preserves_xet_hash_and_mtime_and_skips_sibling
         lambda self, bid: (True, None),
         raising=False,
     )
-    date = datetime(2025, 2, 3, tzinfo=UTC)
-    if hasattr(fs._api, "list_bucket_tree"):
-        bucket_file_cls = getattr(hf_file_system, "BucketFile", SimpleNamespace)
+    bucket_file_cls = getattr(hf_file_system, "BucketFile", SimpleNamespace)
 
-        def fake_bucket_tree(bucket_id, prefix=None, recursive=False, **kwargs):
-            yield bucket_file_cls(
-                type="file",
-                path="logs/a.parquet",
-                size=100,
-                xetHash="xet-abc",
-                uploadedAt="2025-02-03T00:00:00.000Z",
-            )
-            yield bucket_file_cls(
-                type="file",
-                path="logs_old/b.parquet",
-                size=200,
-                xetHash="xet-sibling",
-                uploadedAt="2025-02-03T00:00:00.000Z",
-            )
-
-        monkeypatch.setattr(fs._api, "list_bucket_tree", fake_bucket_tree)
-    else:
-        monkeypatch.setattr(
-            fs,
-            "find",
-            lambda *a, **kw: {
-                "buckets/org/bucket/logs/a.parquet": {
-                    "size": 100,
-                    "xet_hash": "xet-abc",
-                    "uploaded_at": date,
-                },
-                "buckets/org/bucket/logs_old/b.parquet": {
-                    "size": 200,
-                    "xet_hash": "xet-sibling",
-                    "uploaded_at": date,
-                },
-            },
+    def fake_bucket_tree(bucket_id, prefix=None, recursive=False, **kwargs):
+        yield bucket_file_cls(
+            type="file",
+            path="logs/a.parquet",
+            size=100,
+            xetHash="xet-abc",
+            uploadedAt="2025-02-03T00:00:00.000Z",
         )
+        yield bucket_file_cls(
+            type="file",
+            path="logs_old/b.parquet",
+            size=200,
+            xetHash="xet-sibling",
+            uploadedAt="2025-02-03T00:00:00.000Z",
+        )
+
+    monkeypatch.setattr(fs._api, "list_bucket_tree", fake_bucket_tree)
     rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/bucket/logs"))
+    date = datetime(2025, 2, 3, tzinfo=UTC)
     assert [(r.path, r.size, r.etag, r.version, r.last_modified) for r in rows] == [
         ("org/bucket/logs/a.parquet", 100, "xet-abc", "", date)
     ]
