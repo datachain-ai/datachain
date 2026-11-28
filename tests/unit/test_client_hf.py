@@ -551,28 +551,30 @@ def test_unchanged_check_of_a_mutable_file_asks_the_hub(
         client.check_unchanged(file)
 
 
-def test_a_file_without_a_size_passes_the_size_check_after_a_dataset_round_trip(
+def test_a_file_at_a_commit_passes_the_unchanged_check_after_a_dataset_round_trip(
     test_session, monkeypatch, hf_repositories
 ):
     commit = "a" * 40
     client = HfClient("datasets", {"token": False}, test_session.catalog.cache)
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
     files = [
-        File(source=client.uri, path="org/repo/a.txt", version=rev, **kwargs)
-        for rev, kwargs in [
-            (commit, {}),
-            ("v1", {}),
-            (commit, {"etag": "blob"}),
-            (commit, {"etag": "empty-blob", "size": 0}),
-        ]
+        File(source=client.uri, path="org/repo/a.txt", version=commit, **kwargs)
+        for kwargs in [{}, {"etag": "blob"}, {"etag": "empty-blob", "size": 0}]
     ]
     dc.read_values(file=files, session=test_session).save("hf_files")
-    # a dataset stores an omitted size and an empty file's alike, as 0
+    # a dataset stores an omitted size as 0
     for file in [
         *files,
         *dc.read_dataset("hf_files", session=test_session).to_values("file"),
     ]:
         client.check_unchanged(file)
+
+    # a tag can move, so its size is still checked when it was set
+    client.check_unchanged(File(source=client.uri, path="org/repo/a.txt", version="v1"))
+    with pytest.raises(FileNotFoundError, match="size was 0, now 4"):
+        client.check_unchanged(
+            File(source=client.uri, path="org/repo/a.txt", version="v1", size=0)
+        )
 
 
 def test_bucket_file_metadata(catalog):

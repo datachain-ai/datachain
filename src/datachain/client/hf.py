@@ -114,6 +114,13 @@ class HfClient(Client):
             self.fs.sync_fs.current_etag, file.get_fs_path(), file.version or None
         )
 
+    async def _check_unchanged(
+        self, file: "File", *, info: dict[str, Any] | None = None
+    ) -> None:
+        if self._is_version_pinned(file):
+            return  # a commit's bytes can't change
+        await super()._check_unchanged(file, info=info)
+
     def _is_bucket(self, info: dict[str, Any] | None = None) -> bool:
         return (
             self.name == "buckets"
