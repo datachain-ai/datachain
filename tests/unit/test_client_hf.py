@@ -14,7 +14,7 @@ from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 from huggingface_hub import hf_file_system
 from huggingface_hub.hf_api import RepoFile
-from huggingface_hub.hf_file_system import HfFileSystemFile
+from huggingface_hub.hf_file_system import HfFileSystemFile, HfFileSystemStreamFile
 from huggingface_hub.utils import (
     EntryNotFoundError,
     GatedRepoError,
@@ -22,6 +22,7 @@ from huggingface_hub.utils import (
     HFValidationError,
 )
 
+import datachain as dc
 from datachain.asyn import get_loop
 from datachain.cache import Cache
 from datachain.client.hf import HfClient
@@ -532,31 +533,31 @@ def test_unchanged_check_of_a_mutable_file_asks_the_hub(
         client.check_unchanged(file)
 
 
-def test_version_only_file_without_size_does_not_fail_size_check(
-    catalog, monkeypatch, hf_repositories
+def test_a_file_without_a_size_passes_the_size_check_after_a_dataset_round_trip(
+    test_session, monkeypatch, hf_repositories
 ):
     commit = "a" * 40
-    client = HfClient("datasets", {"token": False}, catalog.cache)
+    client = HfClient("datasets", {"token": False}, test_session.catalog.cache)
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
-    for rev in (commit, "v1"):
-        client.check_unchanged(
-            File(source=client.uri, path="org/repo/a.txt", version=rev)
-        )
-    client.check_unchanged(
-        File(source=client.uri, path="org/repo/a.txt", version=commit, etag="blob")
-    )
-    with pytest.raises(FileNotFoundError, match="size was 0, now 4"):
-        client.check_unchanged(
-            File(source=client.uri, path="org/repo/a.txt", version="v1", size=0)
-        )
+    files = [
+        File(source=client.uri, path="org/repo/a.txt", version=rev, **kwargs)
+        for rev, kwargs in [
+            (commit, {}),
+            ("v1", {}),
+            (commit, {"etag": "blob"}),
+            (commit, {"etag": "empty-blob", "size": 0}),
+        ]
+    ]
+    dc.read_values(file=files, session=test_session).save("hf_files")
+    # a dataset stores an omitted size and an empty file's alike, as 0
+    for file in [
+        *files,
+        *dc.read_dataset("hf_files", session=test_session).to_values("file"),
+    ]:
+        client.check_unchanged(file)
     with pytest.raises(FileNotFoundError, match="size was 2, now 4"):
         client.check_unchanged(
-            File(
-                source=client.uri,
-                path="org/repo/a.txt",
-                version="v1",
-                size=2,
-            )
+            File(source=client.uri, path="org/repo/a.txt", version="v1", size=2)
         )
 
 
@@ -753,6 +754,24 @@ def test_reading_a_gated_file_raises_permission_error(
         client.open_object(file, use_cache=False, block_size=block_size) as stream,
     ):
         stream.read(2)
+
+
+def test_a_stream_read_that_opens_the_response_raises_permission_error(
+    catalog, monkeypatch, hf_repositories
+):
+    # huggingface_hub 0.x opens the stream in read(), without _open_connection()
+    error = _http_error(HfHubHTTPError, 403)
+    monkeypatch.setattr(HfFileSystemStreamFile, "read", Mock(side_effect=error))
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    info = {"size": 4, "type": "file"}
+    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value=info))
+    file = File(source=client.uri, path="org/repo/a.txt", size=4, version="a" * 40)
+
+    with (
+        pytest.raises(PermissionError),
+        client.open_object(file, use_cache=False, block_size=0) as stream,
+    ):
+        stream.read()
 
 
 def test_hf_filesystem_is_pickleable(catalog):

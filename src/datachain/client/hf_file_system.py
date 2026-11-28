@@ -97,9 +97,13 @@ class _PinnedStreamFile(HfFileSystemStreamFile):
     def url(self) -> str:
         return _file_url(self)
 
-    def _open_connection(self):
+    def read(self, length=-1):
+        # huggingface_hub 0.x opens the stream here, without _open_connection()
         with _translate_auth_error():
-            super()._open_connection()
+            return super().read(length)
+
+    def _open_connection(self):
+        super()._open_connection()
         if getattr(self.response, "status_code", None) == 200:
             headers = getattr(self.response, "headers", None) or {}
             if (
