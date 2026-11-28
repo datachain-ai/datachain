@@ -898,7 +898,7 @@ def test_archive_prefetch_downloads_once_and_keeps_parent_across_rows(
 
     assert chain.to_values("cached") == [1] * len(members)
     assert downloads == 1
-    assert removed == ["shard.tar"]
+    assert removed == []
 
 
 def test_archive_prefetch_max_size_and_remove_error_in_udf(
@@ -937,7 +937,7 @@ def test_archive_prefetch_max_size_and_remove_error_in_udf(
 
     monkeypatch.setattr(Cache, "remove", fail_remove)
     res = (
-        dc.read_values(file=members[:1], session=test_session)
+        dc.read_values(file=_files(10), session=test_session)
         .settings(prefetch=1)
         .map(sz=lambda file: file.size, output=int)
         .to_values("sz")

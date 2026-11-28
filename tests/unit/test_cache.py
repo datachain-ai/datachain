@@ -260,9 +260,7 @@ def test_cache_pickle_does_not_copy_runtime_owners(cache):
     cache._release_prefetched(oid)
 
 
-def test_prefetch_keeps_shared_archive_until_last_consumer_finishes(
-    cache, catalog, monkeypatch
-):
+def test_prefetch_keeps_shared_archive_until_the_run_ends(cache, catalog, monkeypatch):
     from contextlib import closing
 
     from datachain.lib.udf import _prefetch_inputs
@@ -295,7 +293,8 @@ def test_prefetch_keeps_shared_archive_until_last_consumer_finishes(
         assert cache.contains(parent)
         next(rows)
         assert cache.contains(parent)
-    assert not cache.contains(parent)
+    # a later row may read another member; the run's temporary cache removes it
+    assert cache.contains(parent)
     assert not cache._prefetch_refs
 
 

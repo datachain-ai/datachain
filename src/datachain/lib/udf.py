@@ -850,18 +850,21 @@ def _prefetch_inputs(
                         max_size if prefetch_file is None else None,
                     )
                 )
-                targets = [
-                    target
-                    for _, target in pairs
+                kept = [
+                    (obj, target)
+                    for obj, target in pairs
                     if max_size is None or 0 < target.size <= max_size
                 ]
+                targets = [target for _, target in kept]
                 sizes = budget.targets_for(targets) if budget and targets else {}
                 if budget:
                     budget.take(sizes)
                 item = _PrefetchedRow(row, sizes, [], pairs=pairs)
                 pending[id(item)] = item
                 if remove_prefetched:
-                    item.retain(targets=targets)
+                    # An archive stays until the run ends: a later row may read
+                    # another of its members, and evicting it would download it again.
+                    item.retain(targets=[t for obj, t in kept if t is obj])
                 yield item
 
     async def prefetch_row(item: _PrefetchedRow):
