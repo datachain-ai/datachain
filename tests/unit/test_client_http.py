@@ -196,7 +196,7 @@ def test_storage_uri():
 
 
 @pytest.mark.parametrize("cache", [False, True])
-@pytest.mark.parametrize("operation", ["prefix", "metadata", "full"])
+@pytest.mark.parametrize("operation", ["prefix", "metadata", "full", "save"])
 def test_http_reads_reject_overwritten_source(
     http_server, tmp_path, catalog, cache, operation
 ):
@@ -216,17 +216,22 @@ def test_http_reads_reject_overwritten_source(
     os.utime(path, (mtime, mtime))
 
     error = FileError if operation == "metadata" else FileNotFoundError
+    destination = tmp_path / "saved.png"
+    destination.write_bytes(b"previous destination")
     with pytest.raises(error) as exc:
         if operation == "prefix":
             file.read_bytes(3)
         elif operation == "metadata":
             file.as_image_file().get_info()
+        elif operation == "save":
+            file.save(str(destination))
         else:
             file.read_bytes()
     cause = exc.value.__cause__ if operation == "metadata" else exc.value
     assert isinstance(cause, FileNotFoundError)
     assert "changed on the source" in str(cause)
     assert not catalog.cache.contains(file)
+    assert destination.read_bytes() == b"previous destination"
 
 
 def test_http_cache_hit_reads_saved_content_after_source_changes(
@@ -240,3 +245,5 @@ def test_http_cache_hit_reads_saved_content_after_source_changes(
     path.unlink()
     assert file.read_bytes(3) == b"ori"
     assert file.read_bytes() == b"original"
+    file.save(str(tmp_path / "saved.bin"))
+    assert (tmp_path / "saved.bin").read_bytes() == b"original"
