@@ -151,7 +151,6 @@ def read_dataset(
         ```
 
         ```py
-        session = Session.get(client_config={"aws_endpoint_url": "<minio-url>"})
         settings = {
             "cache": True,
             "parallel": 4,
@@ -159,12 +158,8 @@ def read_dataset(
             "min_task_size": 1000,
             "prefetch": 10,
         }
-        chain = dc.read_dataset(
-            name="my_cats",
-            version="1.0.0",
-            session=session,
-            settings=settings,
-        )
+        with dc.Session("minio", client_config={"aws_endpoint_url": "<minio-url>"}):
+            dc.read_dataset(name="my_cats", version="1.0.0", settings=settings).show()
         ```
     """
     from datachain.telemetry import telemetry
