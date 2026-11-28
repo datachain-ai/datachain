@@ -979,7 +979,7 @@ def test_read_parquet_without_columns_does_not_prefetch_column_ranges(
     )
     http_requests.clear()
 
-    assert sorted(chain.to_values("a")) == [1, 2]
+    assert sorted((a, b) for _, a, b in chain.to_list()) == [(1, "x"), (2, "y")]
     assert (size - 64, size) not in [(s, e) for _, s, e in http_requests]
 
 
