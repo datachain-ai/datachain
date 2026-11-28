@@ -1,9 +1,15 @@
+import asyncio
+import logging
+import os
 import shutil
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from email.utils import parsedate_to_datetime
+from functools import cached_property
 from tempfile import SpooledTemporaryFile
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote
 from xml.etree.ElementTree import Element
 
@@ -16,6 +22,8 @@ from azure.core.exceptions import (
 )
 from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
+from fsspec.config import apply_config
+from fsspec.utils import tokenize
 
 from datachain.lib.file import File, FileRow
 
@@ -32,6 +40,69 @@ _SPOOL_MAX_SIZE = 128 * 1024 * 1024
 _COPY_BUFFER_SIZE = 8 * 1024 * 1024
 
 
+_SCOPE = "https://storage.azure.com/.default"
+_AUTH_RETRY_TTL = 60.0  # seconds: an az login or an identity may come later
+_CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
+_IDENTITY_PROBE: ContextVar[bool] = ContextVar("azure_identity_probe", default=False)
+# A failed automatic probe is expected; explicit authentication keeps SDK warnings.
+logging.getLogger("azure.identity._credentials.chained").addFilter(
+    lambda _: not _IDENTITY_PROBE.get()
+)
+
+
+def _identity_environment() -> frozenset[tuple[str, str]]:
+    return frozenset(
+        (name, value)
+        for name, value in os.environ.items()
+        if name.startswith(("AZURE_", "IDENTITY_", "MSI_", "IMDS_"))
+        or name
+        in (
+            "PATH",
+            "HOME",
+            "AZD_CONFIG_DIR",
+            "USERPROFILE",
+            "SYSTEMROOT",
+            "PROGRAMDATA",
+        )
+    )
+
+
+# Partition fsspec's instance cache when environment credentials change.
+class _AzureFileSystem(AzureBlobFileSystem):
+    def __init__(self, *args, credential_token=None, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+def _cannot_authenticate(credential: Any) -> bool:
+    probe = _IDENTITY_PROBE.set(True)
+    try:
+        credential.get_token(_SCOPE)
+    except ClientAuthenticationError:
+        return True
+    finally:
+        _IDENTITY_PROBE.reset(probe)
+    return False
+
+
+def _credentials_unavailable(fs: AzureBlobFileSystem) -> bool:
+    now = time.monotonic()
+    # adlfs forwards its extra kwargs to DefaultAzureCredential. Filesystem
+    # options such as account_name and version_aware do not change that chain.
+    key = (
+        _identity_environment(),
+        frozenset((name, repr(value)) for name, value in fs.kwargs.items()),
+    )
+    if cached := _CREDENTIAL_CHECKS.get(key):
+        checked, unavailable = cached
+        if now - checked < _AUTH_RETRY_TTL:
+            return unavailable
+    unavailable = _cannot_authenticate(fs.sync_credential)
+    if key not in _CREDENTIAL_CHECKS and len(_CREDENTIAL_CHECKS) >= 16:
+        _CREDENTIAL_CHECKS.pop(next(iter(_CREDENTIAL_CHECKS), ()), None)
+    _CREDENTIAL_CHECKS[key] = time.monotonic(), unavailable
+    return unavailable
+
+
 class _AzureWriteBuffer(SpooledTemporaryFile):
     """Spooled buffer for a metadata-carrying ``File.open`` write to Azure.
 
@@ -45,7 +116,7 @@ class _AzureWriteBuffer(SpooledTemporaryFile):
 
 
 class AzureClient(RangeListedClient):
-    FS_CLASS = AzureBlobFileSystem
+    FS_CLASS = _AzureFileSystem
     PREFIX = "az://"
     protocol = "az"
     LIST_PAGE_SIZE = 5000
@@ -63,6 +134,37 @@ class AzureClient(RangeListedClient):
             "tenant_id",
         }
     )
+
+    @cached_property
+    def _fs_lock(self) -> asyncio.Lock:
+        return asyncio.Lock()
+
+    async def _get_fs(self) -> AzureBlobFileSystem:
+        if self._fs is None:
+            async with self._fs_lock:
+                if self._fs is None:
+                    # Identity discovery may block on a CLI or metadata server.
+                    self._fs = await asyncio.to_thread(self.create_fs, **self.fs_kwargs)
+        return cast("AzureBlobFileSystem", self._fs)
+
+    @classmethod
+    def create_fs(cls, **kwargs) -> AzureBlobFileSystem:
+        from azure.identity import DefaultAzureCredential
+
+        kwargs = apply_config(cls.FS_CLASS, kwargs)
+        kwargs["credential_token"] = tokenize(_identity_environment())
+        fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs))
+        # Failed default credentials cannot authenticate even public-container reads.
+        if (
+            kwargs.get("anon") is None
+            and "AZURE_STORAGE_ANON" not in os.environ
+            and isinstance(getattr(fs, "sync_credential", None), DefaultAzureCredential)
+            and _credentials_unavailable(fs)
+        ):
+            fs = cast(
+                "AzureBlobFileSystem", super().create_fs(**kwargs | {"anon": True})
+            )
+        return fs
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
@@ -88,9 +190,9 @@ class AzureClient(RangeListedClient):
                 if e.status_code not in (401, 403):
                     raise
 
-        # Step 2: Authenticated probe.
+        # Step 2: Require authentication, including in anonymous default configurations.
         try:
-            auth_fs = cls.create_fs(**kwargs)
+            auth_fs = cls.create_fs(**kwargs | {"anon": False})
             sync(get_loop(), auth_fs._info, name)
             return BucketStatus(exists=True, access="authenticated")
         except (PermissionError, ClientAuthenticationError):
@@ -257,7 +359,8 @@ class AzureClient(RangeListedClient):
             # it does not accept version_id as a kwarg.  Embed it in the path
             # so split_path can recover it on the adlfs side.
             lpath = f"{lpath}?versionid={version_id}"
-        await self.fs._get_file(lpath, rpath, callback=callback)
+        fs = await self._get_fs()
+        await fs._get_file(lpath, rpath, callback=callback)
 
     _hns = False
 
@@ -279,9 +382,10 @@ class AzureClient(RangeListedClient):
         delimiter: str = "",
     ) -> Page:
         assert not delimiter, "Azure lists with no delimiter"
+        fs = await self._get_fs()
         kwargs = {"start_from": start_after} if start_after and token is None else {}
         include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
-        async with self.fs.service_client.get_container_client(
+        async with fs.service_client.get_container_client(
             container=self.name
         ) as container:
             # raw page XML: the SDK's deserializer is most of the listing's CPU
