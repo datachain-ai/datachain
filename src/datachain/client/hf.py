@@ -2,6 +2,7 @@ import asyncio
 import functools
 import posixpath
 import re
+from dataclasses import replace
 from threading import Event
 from typing import Any
 
@@ -221,6 +222,22 @@ class HfClient(Client):
                             )
         except EntryNotFoundError as e:
             raise FileNotFoundError(path) from e
+
+    async def _put_in_cache(self, file: "File", *, callback=None) -> None:
+        assert not file.location
+        fs = self.fs.sync_fs
+        p = await asyncio.to_thread(
+            fs.resolve_path, file.get_fs_path(), **self._version_kwargs(file.version)
+        )
+        if not getattr(p, "repo_id", None) or COMMIT.fullmatch(p.revision or ""):
+            return await super()._put_in_cache(file, callback=callback)
+        # a branch can move: check and download the one commit it points to now
+        commit = await asyncio.to_thread(fs.commit_of, p)
+        at_commit = replace(p, revision=commit, _raw_revision=None).unresolve()
+        if file.etag or (self._has_version(file) and file.size > 0):
+            info = await asyncio.to_thread(fs.info, at_commit, expand_info=True)
+            await self._check_unchanged(file, info=info)
+        await self.cache.download(file, self, callback=callback, from_path=at_commit)
 
     async def _check_unchanged(
         self, file: "File", *, info: dict[str, Any] | None = None

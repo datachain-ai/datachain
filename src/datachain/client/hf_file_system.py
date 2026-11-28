@@ -88,13 +88,26 @@ def _file_url(file_obj) -> str:
     )
 
 
+_RESUMES_IN_HOOK = hasattr(HfFileSystemStreamFile, "_open_connection")
+
+
 class _PinnedStreamFile(HfFileSystemStreamFile):
     def url(self) -> str:
         return _file_url(self)
 
-    def _open_connection(self):
+    def read(self, length=-1):
+        # huggingface_hub 0.x opens and resumes the stream here, without
+        # _open_connection(), and a resumed full body would repeat bytes
+        response, loc = self.response, self.loc
         with _translate_auth_error():
-            super()._open_connection()
+            out = super().read(length)
+        resumed = loc and self.response is not response
+        if not _RESUMES_IN_HOOK and resumed and self.response.status_code != 206:
+            raise OSError(f"{self.path} restarted instead of resuming at {loc}")
+        return out
+
+    def _open_connection(self):
+        super()._open_connection()
         if getattr(self.response, "status_code", None) == 200:
             headers = getattr(self.response, "headers", None) or {}
             if (

@@ -651,10 +651,10 @@ class Client(ABC):
         self, file: "File", *, info: dict[str, Any] | None = None
     ) -> None:
         # Metadata updates can change a pinned file's etag without changing its
-        # bytes, so compare its size instead, which still catches appends. A negative
-        # size, or one never set, means it's unknown.
+        # bytes, so compare its size instead, which still catches appends. A size
+        # that isn't positive is unknown: a dataset stores an omitted one as 0.
         pinned = self._is_version_pinned(file)
-        has_size = file.size > 0 or (file.size == 0 and "size" in file.model_fields_set)
+        has_size = file.size > 0
 
         change = ""
         if (pinned or (self._has_version(file) and not file.etag)) and has_size:
