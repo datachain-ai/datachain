@@ -1,4 +1,5 @@
 import gc
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from weakref import ref
@@ -7,7 +8,13 @@ import pytest
 
 import datachain as dc
 from datachain.catalog import Catalog
+from datachain.data_storage import JobStatus
 from datachain.query.session import Session
+from tests.utils import (
+    e2e_subprocess_env,
+    run_test_subprocess,
+    wait_for_test_subprocess,
+)
 
 
 def test_listing_dataset_lifecycle(tmp_path, catalog):
@@ -114,7 +121,7 @@ def test_failed_listing_cleans_seed_and_preserves_parent(catalog, tmp_path, mock
 def test_listing_in_another_thread_preserves_active_session(
     catalog_tmpfile, tmp_path, monkeypatch
 ):
-    from datachain.lib.dc import records
+    from datachain.lib import listing as listing_lib
 
     catalog = catalog_tmpfile
     folder = tmp_path / "input"
@@ -122,12 +129,12 @@ def test_listing_in_another_thread_preserves_active_session(
     (folder / "file.txt").write_text("contents")
     entered = Event()
     resume = Event()
-    create_records = records.create_records_dataset
+    list_pages = listing_lib.list_pages
 
-    def paused_seed(*args, **kwargs):
+    def paused_listing(*args, **kwargs):
         entered.set()
         assert resume.wait(15)
-        return create_records(*args, **kwargs)
+        return list_pages(*args, **kwargs)
 
     def list_in_worker():
         with Catalog(
@@ -142,18 +149,61 @@ def test_listing_in_another_thread_preserves_active_session(
 
     with Session("owner", catalog=catalog) as parent:
         parent.get_or_create_job()
-        monkeypatch.setattr(records, "create_records_dataset", paused_seed)
+        monkeypatch.setattr(listing_lib, "list_pages", paused_listing)
         with ThreadPoolExecutor(max_workers=1) as pool:
             listing = pool.submit(list_in_worker)
             try:
                 if not entered.wait(10):
                     listing.result(timeout=1)
-                    pytest.fail("listing did not reach seed creation")
+                    pytest.fail("listing did not start")
                 assert Session.get() is parent
-                monkeypatch.setattr(records, "create_records_dataset", create_records)
                 kept = dc.read_values(value=[1]).persist()
             finally:
                 resume.set()
             assert listing.result(timeout=30) == [("file.txt",)]
         assert Session.get() is parent
         assert kept.to_values("value") == [1]
+
+
+SCRIPT_WITH_IN_MEMORY_SESSIONS = """\
+import datachain as dc
+with dc.Session("first", in_memory=True):
+    dc.read_values(x=[1]).save("in_memory")
+dc.read_values(x=[1]).save("persistent")
+with dc.Session("last", in_memory=True):
+    dc.read_values(x=[1]).save("in_memory")
+    {end}
+"""
+
+
+def _run_script_with_in_memory_sessions(tmp_path, catalog, end):
+    script = tmp_path / "script.py"
+    script.write_text(SCRIPT_WITH_IN_MEMORY_SESSIONS.format(end=end))
+    env = e2e_subprocess_env(catalog)
+    env.pop("DATACHAIN_JOB_ID", None)
+
+    process = run_test_subprocess([sys.executable, str(script)], env)
+    _, _, stderr = wait_for_test_subprocess(process)
+    return catalog.metastore.get_last_job_by_name(str(script)), stderr
+
+
+def test_script_end_after_in_memory_sessions_completes_its_job(
+    tmp_path, catalog_tmpfile
+):
+    job, stderr = _run_script_with_in_memory_sessions(tmp_path, catalog_tmpfile, "pass")
+
+    assert "Exception ignored" not in stderr
+    assert job is not None, stderr
+    assert job.status == JobStatus.COMPLETE, stderr
+
+
+def test_script_ctrl_c_after_in_memory_sessions_cancels_its_job(
+    tmp_path, catalog_tmpfile
+):
+    job, stderr = _run_script_with_in_memory_sessions(
+        tmp_path, catalog_tmpfile, "raise KeyboardInterrupt"
+    )
+
+    assert "Exception ignored" not in stderr
+    assert job is not None, stderr
+    assert job.status == JobStatus.CANCELED, stderr

@@ -6,16 +6,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import botocore.session
 import pytest
+from aiobotocore.awsrequest import AioAWSResponse
 from botocore.exceptions import ClientError
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync
 
+from datachain.client import s3 as s3_mod
 from datachain.client.s3 import (
     _FIELDS,
     ClientS3,
     _fields,
     _handle_200_error,
     _parse_timestamp,
+    _rows_page,
 )
 from datachain.client.writeconfig import WriteConfig
 from datachain.node import DirType, Node
@@ -217,13 +220,8 @@ def test_r2_lists_out_of_key_order(mocker):
 def test_listing_pays_as_requester_when_asked(versions, requester_pays):
     s3 = MagicMock()
     s3.list_objects_v2 = s3.list_object_versions = AsyncMock(return_value={})
-    client = ClientS3("bucket", {}, None)
-    client._fs = MagicMock(
-        version_aware=versions,
-        req_kw={"RequestPayer": "requester"} if requester_pays else {},
-        set_session=AsyncMock(),
-        get_s3=AsyncMock(return_value=s3),
-    )
+    req_kw = {"RequestPayer": "requester"} if requester_pays else {}
+    client = _listing_client(versions, s3, req_kw=req_kw)
 
     sync(get_loop(), client._list_page, "", "", None, lambda _: True)
 
@@ -285,22 +283,45 @@ def s3_bodies(mocker):
         skip_instance_cache=True,
     )
 
-    def listed(*answers: bytes):
+    def page(*answers, versions=False, delimiter="", patterns=True):
         bodies[:] = answers
+        requests.clear()
+        client = ClientS3("b", {"version_aware": versions}, None)
+        client._fs = fs
+        client._unversioned = not versions  # these bodies are pages, not versioning
+        if not patterns:
+            client._declined_pages = 3
+        fs.version_aware = versions
+        return (
+            sync(get_loop(), client._list_page, "", "", None, delimiter=delimiter),
+            len(requests),
+        )
 
-        async def keys():
-            await fs.set_session()
-            s3 = await fs.get_s3()
-            page = await s3.list_objects_v2(Bucket="b")
-            return [d["Key"] for d in page.get("Contents", [])]
+    def listed(*answers, versions=False):
+        listed_page, count = page(*answers, versions=versions)
+        return [r.path for r in listed_page.rows], count
 
-        return sync(get_loop(), keys), len(requests)
-
+    listed.page = page
+    listed.fs = fs
+    listed.bodies = bodies
     yield listed
     server.shutdown()
     server.server_close()
 
 
+def _as_versions_xml(body: bytes) -> bytes:
+    version = b"<Version><VersionId>v1</VersionId><IsLatest>true</IsLatest>"
+    return (
+        body.replace(b"ListBucketResult", b"ListVersionsResult")
+        .replace(b"<Contents>", version)
+        .replace(b"</Contents>", b"</Version>")
+    )
+
+
+NBSP_TAG = PAGE.replace(b"</Size>", "</Size><StorageClass\u00a0/>".encode())
+
+
+@pytest.mark.parametrize("versions", [False, True])
 @pytest.mark.parametrize(
     "answers, keys, requests",
     [
@@ -310,12 +331,31 @@ def s3_bodies(mocker):
         ([MALFORMED, PAGE], ["a"], 2),
         ([TRUNCATED, PAGE], ["a"], 2),
         ([ERROR_200, PAGE], ["a"], 2),
+        ([NBSP_TAG, PAGE], ["a"], 2),
+        ([PAGE.replace(b"</Key>", b"\x0b</Key>"), PAGE], ["a"], 2),
+        ([PAGE.replace(b"</Key>", "\ufffe".encode() + b"</Key>"), PAGE], ["a"], 2),
+        ([PAGE.replace(b"version", b"VERSION"), PAGE], ["a"], 2),
         ([PAGE.replace(b"s3.amazonaws.com/doc/", b"doc.s3.amazonaws.com/")], ["a"], 1),
     ],
-    ids=["valid", "comment", "empty", "malformed", "truncated", "error", "gcs-xml"],
+    ids=[
+        "valid",
+        "comment",
+        "empty",
+        "malformed",
+        "truncated",
+        "error",
+        "nbsp-tag",
+        "control",
+        "nonchar",
+        "upper-decl",
+        "gcs-xml",
+    ],
 )
-def test_s3_listing_retries_only_a_bad_200(s3_bodies, answers, keys, requests):
-    assert s3_bodies(*answers) == (keys, requests)
+def test_s3_listing_retries_only_a_bad_200(
+    s3_bodies, versions, answers, keys, requests
+):
+    bodies = [_as_versions_xml(b) if versions else b for b in answers]
+    assert s3_bodies(*bodies, versions=versions) == (keys, requests)
 
 
 @pytest.mark.parametrize(
@@ -399,11 +439,14 @@ def test_listing_parser_hooks_only_the_synchronous_parse():
     assert not inspect.iscoroutinefunction(_ListingParser._do_parse)
 
 
-def _listing_client(versions, s3):
-    client = ClientS3("bucket", {}, None)
+def _listing_client(versions, s3, bucket="bucket", req_kw=None):
+    if not isinstance(s3.get_bucket_versioning, AsyncMock):
+        s3.get_bucket_versioning = AsyncMock(return_value={"Status": "Enabled"})
+    client = ClientS3(bucket, {}, None)
     client._fs = MagicMock(
         version_aware=versions,
-        req_kw={},
+        req_kw=req_kw or {},
+        _s3=s3,
         set_session=AsyncMock(),
         get_s3=AsyncMock(return_value=s3),
     )
@@ -417,7 +460,7 @@ def _listing_client(versions, s3):
         (True, ("k", "v"), "NotImplemented"),
         (False, None, "NotImplemented"),
     ],
-    ids=["other-error", "after-first-page", "non-versioned"],
+    ids=["first-page", "after-first-page", "non-versioned"],
 )
 def test_list_page_errors(versions, token, code):
     error = ClientError({"Error": {"Code": code}}, "ListObjectVersions")
@@ -432,22 +475,346 @@ def test_list_page_errors(versions, token, code):
     assert not s3.list_objects_v2.call_count if versions else True
 
 
-def test_list_page_falls_back_to_current_objects_without_version_support():
-    error = ClientError({"Error": {"Code": "NotImplemented"}}, "ListObjectVersions")
-    contents = [
-        {"Key": "a", "Size": 1, "ETag": '"e"', "LastModified": parse_timestamp(0)}
-    ]
-    s3 = MagicMock(
-        list_object_versions=AsyncMock(side_effect=error),
-        list_objects_v2=AsyncMock(
-            return_value={"Contents": contents, "IsTruncated": False}
+def _error(code, operation="ListObjectVersions"):
+    return ClientError({"Error": {"Code": code}}, operation)
+
+
+@pytest.mark.parametrize(
+    "version_aware, bucket, endpoint, versioning, probe, lists_versions",
+    [
+        (True, "b", "", {}, None, False),
+        (True, "b", "", {"Status": "Enabled"}, None, True),
+        (True, "b", "", {"Status": "Suspended"}, None, True),
+        (True, "b", "", _error("AccessDenied", "GetBucketVersioning"), {}, True),
+        (
+            True,
+            "b",
+            "",
+            _error("AccessDenied", "GetBucketVersioning"),
+            _error("AccessDenied"),
+            False,
         ),
+        (
+            True,
+            "b",
+            "",
+            _error("NotImplemented", "GetBucketVersioning"),
+            _error("NotImplemented"),
+            False,
+        ),
+        (False, "b", "", None, None, False),
+        (True, "b--usw2-az1--x-s3", "", None, None, False),
+        (True, "b", "https://a.r2.cloudflarestorage.com", None, None, False),
+    ],
+    ids=[
+        "never-versioned",
+        "enabled",
+        "suspended",
+        "check-denied",
+        "check-and-versions-denied",
+        "no-version-support",
+        "versions-not-asked",
+        "directory-bucket",
+        "r2",
+    ],
+)
+def test_list_page_lists_versions_only_where_the_bucket_may_hold_them(
+    version_aware, bucket, endpoint, versioning, probe, lists_versions
+):
+    probes = [] if probe is None else [probe]
+    s3 = MagicMock(
+        get_bucket_versioning=AsyncMock(side_effect=[versioning]),
+        list_object_versions=AsyncMock(side_effect=[*probes, {}, {}]),
+        list_objects_v2=AsyncMock(return_value={}),
+    )
+    s3.meta.endpoint_url = endpoint
+    client = _listing_client(version_aware, s3, bucket)
+
+    for _ in range(2):
+        sync(get_loop(), client._list_page, "", "", None)
+
+    assert s3.get_bucket_versioning.call_count == int(versioning is not None)
+    assert s3.list_object_versions.call_count == len(probes) + 2 * lists_versions
+    assert s3.list_objects_v2.call_count == 2 * (not lists_versions)
+
+
+@pytest.mark.parametrize(
+    "check, probe",
+    [("InternalError", None), ("AccessDenied", "NoSuchBucket")],
+    ids=["check-fails", "check-denied-probe-fails"],
+)
+def test_a_versions_check_raises_errors_other_than_denials(check, probe):
+    s3 = MagicMock(
+        get_bucket_versioning=AsyncMock(
+            side_effect=_error(check, "GetBucketVersioning")
+        ),
+        list_object_versions=AsyncMock(side_effect=_error(probe or "Unexpected")),
+        list_objects_v2=AsyncMock(return_value={}),
     )
     client = _listing_client(True, s3)
 
-    for _ in range(2):  # the second page goes straight to the current objects
-        page = sync(get_loop(), client._list_page, "", "", None)
-        assert [(r.path, r.version, r.is_latest) for r in page.rows] == [
-            ("a", "", True)
-        ]
-    assert s3.list_object_versions.call_count == 1
+    with pytest.raises(ClientError, match=probe or check):
+        sync(get_loop(), client._list_page, "", "", None)
+    assert s3.list_object_versions.call_count == int(probe is not None)
+    assert not s3.list_objects_v2.called
+
+
+def test_each_listing_settles_its_versions_before_its_first_page():
+    s3 = MagicMock(
+        get_bucket_versioning=AsyncMock(side_effect=[{}, {"Status": "Enabled"}]),
+        list_object_versions=AsyncMock(return_value={}),
+        list_objects_v2=AsyncMock(return_value={}),
+    )
+    client = _listing_client(True, s3)
+
+    async def listing(method):
+        return [page async for page in client.scandir("", method)]
+
+    for method in ("default", "level"):
+        sync(get_loop(), listing, method)
+
+    assert s3.get_bucket_versioning.call_count == 2
+    assert s3.list_objects_v2.call_count == s3.list_object_versions.call_count == 1
+
+
+WHEN = _parse_timestamp("2026-09-30T23:00:00.000Z")
+FOLDER = b"<CommonPrefixes><Prefix>p/z+1%26/</Prefix></CommonPrefixes>"
+
+
+def _page(body: bytes, op: str = "ListObjectsV2"):
+    model = botocore.session.get_session().get_service_model("s3")
+    shape = model.operation_model(op).output_shape
+    return _rows_page(body, shape, "s3://b")
+
+
+ENCODED = (
+    PAGE.replace(b"<Key>a</Key>", b"<Key>p/a+b%26c</Key>")
+    .replace(
+        b"<IsTruncated>false</IsTruncated>",
+        b"<EncodingType>url</EncodingType><IsTruncated>true</IsTruncated>"
+        b"<NextContinuationToken>t+1</NextContinuationToken>",
+    )
+    .replace(b"</Contents>", b"</Contents>" + FOLDER)
+)
+VERSIONS = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<ListVersionsResult '
+    b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>b</Name>'
+    b"<MaxKeys>1000</MaxKeys><EncodingType>url</EncodingType>"
+    b"<IsTruncated>true</IsTruncated><NextKeyMarker>p/d+1%26</NextKeyMarker>"
+    b"<NextVersionIdMarker>v2</NextVersionIdMarker>"
+    b"<Version><Key>p/a+b%26c</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest>"
+    b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+    b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Version>"
+    b"<DeleteMarker><Key>p/d+1%26</Key><VersionId>v2</VersionId><IsLatest>true</IsLatest>"
+    b"<LastModified>2026-09-30T23:00:00.000Z</LastModified></DeleteMarker>"
+    + FOLDER
+    + b"</ListVersionsResult>"
+)
+
+
+def test_patterns_read_a_page_as_s3_writes_it(s3_bodies):
+    assert _page(ENCODED) is not None
+    assert _page(VERSIONS, "ListObjectVersions") is not None
+
+    page, count = s3_bodies.page(ENCODED, versions=False, delimiter="/")
+    versions, v_count = s3_bodies.page(VERSIONS, versions=True, delimiter="/")
+
+    assert (count, v_count) == (1, 1)
+    assert [tuple(r) for r in page.rows] == [
+        ("s3://b", "p/a b&c", 1, "", "e", True, WHEN, None)
+    ]
+    assert (page.folders, page.last, page.token) == (("p/z 1&/",), "p/z 1&/", "t+1")
+    assert [tuple(r) for r in versions.rows] == [
+        ("s3://b", "p/a b&c", 1, "v1", "e", True, WHEN, None)
+    ]
+    assert (versions.folders, versions.last, versions.token) == (
+        ("p/z 1&/",),
+        "p/z 1&/",
+        ("p/d 1&", "v2"),
+    )
+
+
+@pytest.mark.parametrize("versions", [False, True])
+@pytest.mark.parametrize(
+    "old, new, key",
+    [
+        (b"<Name>", b"<!-- c --><Name>", "a"),
+        (b"<Size>1</Size>", b"<Size>1</Size><Extra/>", "a"),
+        (b"</Key>", b"&#13;</Key>", "a\r"),
+        (b"</Key>", b"\r</Key>", "a\n"),
+        (b'"1.0" encoding="UTF-8"', b"'1.0' encoding='utf-8'", "a"),
+    ],
+    ids=["comment", "unknown-field", "char-reference", "cr", "single-quoted-decl"],
+)
+def test_elementtree_reads_a_page_the_patterns_do_not(
+    s3_bodies, versions, old, new, key
+):
+    body = (_as_versions_xml(PAGE) if versions else PAGE).replace(old, new)
+    op = "ListObjectVersions" if versions else "ListObjectsV2"
+
+    assert _page(body, op) is None
+    assert s3_bodies(body, versions=versions) == ([key], 1)
+
+
+def test_client_stops_trying_patterns_after_three_declined_pages(
+    s3_bodies, mocker, caplog
+):
+    declined = PAGE.replace(b"<Size>1</Size>", b"<Size>1</Size><Extra/>")
+    spy = mocker.spy(s3_mod, "_rows_page")
+    client = ClientS3("b", {"version_aware": False}, None)
+    client._fs = s3_bodies.fs
+    s3_bodies.fs.version_aware = False
+    s3_bodies.bodies[:] = [declined, declined, declined, PAGE]
+
+    with caplog.at_level("DEBUG", logger="datachain"):
+        pages = [sync(get_loop(), client._list_page, "", "", None) for _ in range(4)]
+
+    assert [[r.path for r in p.rows] for p in pages] == [["a"]] * 4
+    assert spy.call_count == 3
+    assert "reading pages with ElementTree" in caplog.text
+
+
+ENTRY_A = (
+    b"<Contents><Key>a&amp;lt;b&amp;c&lt;d&gt;&apos;&#34;&#39;</Key>"
+    b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+    b"<ETag>&quot;e1&quot;</ETag><ChecksumAlgorithm>CRC32</ChecksumAlgorithm>"
+    b"<ChecksumType>FULL_OBJECT</ChecksumType><Size>1</Size>"
+    b"<StorageClass>STANDARD</StorageClass>"
+    b"<Owner><ID>o</ID><DisplayName>d</DisplayName></Owner></Contents>"
+)
+ENTRY_B = (
+    b"<Contents><Key>b</Key>"
+    b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+    b"<ETag>&quot;e2&quot;</ETag><Size>2</Size>"
+    b"<StorageClass \t\n/><Owner><ID/><DisplayName/></Owner></Contents>"
+)
+PAGE_ENTRY = (
+    b"<Contents><Key>a</Key><LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+    b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Contents>"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        PAGE.replace(b"UTF-8", b"utf-8"),
+        PAGE.replace(PAGE_ENTRY, b""),
+        PAGE.replace(PAGE_ENTRY, ENTRY_A + ENTRY_B + FOLDER),
+        ENCODED,
+        VERSIONS,
+    ],
+    ids=["utf-8-decl", "empty", "entities-and-checksums", "encoded", "versions"],
+)
+def test_patterns_agree_with_elementtree_on_accepted_pages(s3_bodies, body):
+    versions = b"<ListVersionsResult" in body
+    op = "ListObjectVersions" if versions else "ListObjectsV2"
+
+    assert _page(body, op) is not None
+    fast, _ = s3_bodies.page(body, versions=versions, delimiter="/")
+    slow, _ = s3_bodies.page(body, versions=versions, delimiter="/", patterns=False)
+    assert fast == slow
+
+
+@pytest.mark.parametrize(
+    "body, keys, folders",
+    [
+        # gap between entries: must decline so the second entry is not dropped
+        (
+            PAGE.replace(b"</Contents>", b"</Contents><Extra/>" + ENTRY_B),
+            ["a", "b"],
+            (),
+        ),
+        # trailing entry with reordered fields: must decline so it is not dropped
+        (
+            PAGE.replace(
+                b"</Contents>",
+                b"</Contents><Contents><Size>2</Size><Key>b</Key>"
+                b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+                b"<ETag>&quot;e2&quot;</ETag></Contents>",
+            ),
+            ["a", "b"],
+            (),
+        ),
+        # nested entry inside another tag: must decline so it is not treated as root's
+        (
+            PAGE.replace(b"<Contents>", b"<Extra><Contents>").replace(
+                b"</Contents>", b"</Contents></Extra>"
+            ),
+            [],
+            (),
+        ),
+        # unread entry before matched entries: must decline so it is not skipped
+        (
+            PAGE.replace(
+                b"<Contents>",
+                b"<CommonPrefixes><Extra/><Prefix>z/</Prefix></CommonPrefixes><Contents>",
+            ),
+            ["a"],
+            ("z/",),
+        ),
+    ],
+    ids=["gap", "reordered-entry", "nested-entry", "unread-prefix"],
+)
+def test_elementtree_reads_entries_that_patterns_decline(
+    s3_bodies, body, keys, folders
+):
+    assert _page(body) is None
+    page, _ = s3_bodies.page(body, delimiter="/")
+    assert ([r.path for r in page.rows], page.folders) == (keys, folders)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        PAGE + b"\xff",
+        PAGE.replace(b"<Name>b</Name>", b"<Name>b</Tag>"),
+        PAGE.replace(b"2026-09-30T23:00:00.000Z", b"not-a-date"),
+        VERSIONS.replace(b"2026-09-30T23:00:00.000Z", b"not-a-date"),
+        VERSIONS.replace(
+            b"<LastModified>2026-09-30T23:00:00.000Z</LastModified></DeleteMarker>",
+            b"<LastModified></LastModified></DeleteMarker>",
+        ),
+    ],
+    ids=[
+        "non-utf8",
+        "bad-root-xml",
+        "bad-object-date",
+        "bad-marker-date",
+        "empty-marker-date",
+    ],
+)
+def test_patterns_decline_unparseable_pages(body):
+    op = "ListObjectVersions" if b"<ListVersionsResult" in body else "ListObjectsV2"
+    assert _page(body, op) is None
+
+
+def test_s3_version_listing_retries_slowdown(mocker, monkeypatch):
+    monkeypatch.delenv("AWS_RETRY_MODE", raising=False)
+    monkeypatch.delenv("AWS_MAX_ATTEMPTS", raising=False)
+    mocker.patch("aiobotocore.session.AioSession.get_scoped_config", return_value={})
+    mocker.patch(
+        "botocore.retries.standard.ExponentialBackoff.delay_amount", return_value=0
+    )
+    mocker.patch(
+        "aiobotocore.retries.bucket.AsyncTokenBucket.acquire", return_value=True
+    )
+    slowdown = b"<Error><Code>SlowDown</Code><Message>Retry.</Message></Error>"
+    slow = AioAWSResponse("", 503, {}, MagicMock(read=AsyncMock(return_value=slowdown)))
+    ok = AioAWSResponse(
+        "", 200, {}, MagicMock(read=AsyncMock(return_value=_as_versions_xml(PAGE)))
+    )
+    send = mocker.patch(
+        "aiobotocore.endpoint.AioEndpoint._send", side_effect=[slow] * 5 + [ok]
+    )
+    client = ClientS3(
+        "b",
+        {"anon": True, "region_name": "us-east-1", "skip_instance_cache": True},
+        None,
+    )
+    client._unversioned = False  # the replies are list pages only
+
+    page = sync(get_loop(), client._list_page, "", "", ("0", "v0"))
+
+    assert [row.path for row in page.rows] == ["a"]
+    assert send.call_count == 6
+    assert client.fs.s3.meta.config.retries["mode"] == "adaptive"

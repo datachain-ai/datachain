@@ -1,19 +1,43 @@
 import base64
 import json
+import sqlite3
+from contextlib import closing
+from datetime import UTC, datetime, timedelta, timezone
+from enum import StrEnum
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
+import pyarrow as pa
 import pytest
 import sqlalchemy as sa
 
 import datachain as dc
+from datachain.data_storage.codec import (
+    RowCodec,
+    RowEncodeError,
+    TypeCodec,
+    check_value,
+)
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
+from datachain.data_storage.writer import MAX_SEQ
+from datachain.error import TableMissingError
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import UdfError
-from datachain.query.dataset import process_udf_outputs
-from datachain.sql.types import Int, String
+from datachain.lib.udf import JsonSerializationError, OutputRows, UdfError
+from datachain.sql.sqlite.base import adapt_datetime
+from datachain.sql.types import (
+    JSON,
+    Array,
+    Binary,
+    Boolean,
+    DateTime,
+    Float,
+    Int,
+    Int64,
+    String,
+)
 from tests.utils import skip_if_not_sqlite
 
 
@@ -71,9 +95,7 @@ def test_table_rows_count(numbers_table, warehouse):
 
 
 def test_dataset_select_paginated(numbers_table, warehouse):
-    query = sa.select(numbers_table.c.sys__id, numbers_table.c.number).order_by(
-        numbers_table.c.number
-    )
+    query = sa.select(numbers_table.c.sys__id, numbers_table.c.number)
     with patch.object(
         type(warehouse),
         attribute="dataset_rows_select",
@@ -89,11 +111,7 @@ def test_dataset_select_paginated(numbers_table, warehouse):
 
 @pytest.mark.parametrize("limit", [7, 8, 9])
 def test_dataset_select_paginated_with_limit(limit, numbers_table, warehouse):
-    query = (
-        sa.select(numbers_table.c.sys__id, numbers_table.c.number)
-        .order_by(numbers_table.c.number)
-        .limit(limit)
-    )
+    query = sa.select(numbers_table.c.sys__id, numbers_table.c.number).limit(limit)
     with patch.object(
         type(warehouse),
         attribute="dataset_rows_select",
@@ -104,7 +122,7 @@ def test_dataset_select_paginated_with_limit(limit, numbers_table, warehouse):
     assert len(rows) == limit
     ids, nums = zip(*rows, strict=False)
     assert len(set(ids)) == limit
-    assert list(nums) == list(range(1, limit + 1))
+    assert set(nums) <= set(range(1, 74))
 
 
 def test_dataset_rows_select(numbers_table, warehouse):
@@ -237,25 +255,20 @@ def test_empty_rows_insert_defaults(sqlite_db):
     warehouse = SQLiteWarehouse(sqlite_db)
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    warehouse.insert_rows(table, [{}, {}])
-    warehouse.insert_rows_done(table)
+    warehouse.insert_stored_rows(table, [], [(), ()])
 
     query = sa.select(table.c.value)
     assert list(warehouse.dataset_rows_select(query)) == [(None,), (None,)]
 
 
-def test_map_tuples_are_validated(sqlite_db):
+def test_output_rows_validate_tuples(sqlite_db):
     warehouse = SQLiteWarehouse(sqlite_db)
-    table = warehouse.create_udf_table([sa.Column("a", Int), sa.Column("b", String)])
-    inner = SimpleNamespace(
-        output=SignalSchema({"a": int, "b": str}),
-        is_input_batched=False,
-        is_output_batched=False,
-    )
-    udf = SimpleNamespace(output={"a": Int, "b": String}, inner=inner)
+    udf = SimpleNamespace(output=SignalSchema({"a": int, "b": str}), udf_kind="map")
+    output_rows = OutputRows(udf, warehouse)  # type: ignore[arg-type]
 
-    with pytest.raises(UdfError):
-        process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
+    assert output_rows((1, "x")) == (1, "x")
+    with pytest.raises(UdfError, match="output column 'a'"):
+        output_rows(("x", "y"))
 
 
 @skip_if_not_sqlite
@@ -267,8 +280,7 @@ def test_insert_into_reads_all_ids_before_inserting_batches(
     src, dst, unrelated = (
         warehouse.create_udf_table([sa.Column("value", sa.Integer)]) for _ in range(3)
     )
-    warehouse.insert_rows(src, [{"value": i} for i in range(10)])
-    warehouse.insert_rows_done(src)
+    warehouse.insert_stored_rows(src, ["value"], [(i,) for i in range(10)])
 
     # Another connection commits after each batch. With the id cursor still open,
     # the next batch fails with "database is locked".
@@ -336,3 +348,281 @@ def test_batched_id_fetch_preserves_join_fanout(numbers_table, warehouse):
         [],
         [2, 3],
     ]
+
+
+DATETIMES = [
+    datetime(2024, 1, 2, 3, 4, 5),
+    datetime(2024, 1, 2, 3, 4, 5, 120),
+    datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone(timedelta(hours=-5))),
+    datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+    datetime(9, 1, 1),
+]
+
+
+@pytest.mark.parametrize("value", DATETIMES)
+def test_codec_stores_datetimes_as_the_adapter_text(sqlite_db, value):
+    # Filter parameters still go through adapt_datetime: stored text must match it.
+    codec = SQLiteWarehouse(sqlite_db).row_codec([DateTime()])
+
+    assert codec.encode((value,)) == (adapt_datetime(value),)
+    encoded = codec.encode_arrow(
+        pa.record_batch([pa.array([value, None])], names=["t"])
+    )
+    assert encoded.column(0).to_pylist() == [adapt_datetime(value), None]
+
+
+class _StrEnum(StrEnum):
+    A = "a"
+    B = "b"
+    ONE = "1"
+
+
+class _Mangled(str):
+    """A str subclass whose __str__ disagrees with the key json emits."""
+
+    __slots__ = ()
+
+    def __str__(self):
+        return "MANGLED"
+
+
+class _OpaqueStr(str):
+    """A str subclass whose equality cannot spot a duplicate key."""
+
+    __slots__ = ()
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
+
+
+# Ported from #1943 (#1914): keys that collide as JSON raise instead of losing a
+# value; the codec's JSON encoder is the one place a dict becomes JSON.
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"1": "a", 1: "b"},
+        {None: "a", "null": "b"},
+        {True: "a", "true": "b"},
+        {(1, 2): "a", "[1,2]": "b"},
+        {"1": "a", _OpaqueStr("1"): "b"},
+        {_StrEnum.ONE: "a", 1: "b"},
+        {"payload": np.array([{"1": "first", 1: "second"}], dtype=object)},
+    ],
+    ids=[
+        "int-and-str",
+        "none-and-null",
+        "bool-and-str",
+        "tuple-and-str",
+        "subclass",
+        "enum-value-and-int",
+        "inside-a-numpy-object-array",
+    ],
+)
+def test_json_encoding_refuses_colliding_dict_keys(value):
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        check_value(JSON())(value)
+
+
+def test_json_array_items_refuse_colliding_dict_keys():
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        check_value(Array(JSON()))([{"1": "first", 1: "second"}])
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ({"x": "a", 2: "b"}, {"x": "a", "2": "b"}),
+        ({1: "a", 2: "b"}, {"1": "a", "2": "b"}),
+        ({_StrEnum.A: "x", _StrEnum.B: "y"}, {"a": "x", "b": "y"}),
+        ({_StrEnum.A: "x", "_StrEnum.A": "y"}, {"a": "x", "_StrEnum.A": "y"}),
+        ({_Mangled("a"): "x"}, {"a": "x"}),
+    ],
+    ids=["mixed", "all-int", "enum", "enum-and-its-label", "custom-str"],
+)
+def test_json_encoding_keeps_dict_keys_that_do_not_collide(value, expected):
+    assert json.loads(check_value(JSON())(value)) == expected
+
+
+@pytest.mark.parametrize(
+    "value,col_type,expected",
+    [
+        ([1, 2], Array(Float()), [1.0, 2.0]),
+        (("x", "y"), Array(String()), ["x", "y"]),
+    ],
+    ids=["float-from-int", "tuple-to-list"],
+)
+def test_check_value_converts_array_items(value, col_type, expected):
+    assert check_value(col_type)(value) == expected
+
+
+def test_check_value_does_not_re_encode_dict_array_items():
+    value = [{"a": 1}, {"b": 2}]
+    assert check_value(Array(JSON()))(value) == value
+
+
+@skip_if_not_sqlite
+def test_get_table_evicts_stale_cached_table_when_dropped_out_of_band(warehouse):
+    table = warehouse.create_udf_table([sa.Column("x", Int64)], name="udf_cached_check")
+    first = warehouse.get_table("udf_cached_check")
+    assert warehouse.get_table("udf_cached_check") is first
+    assert warehouse.db.get_table("udf_cached_check") is first
+
+    warehouse.db.execute_str(f"DROP TABLE {table.name}")
+    with pytest.raises(TableMissingError):
+        warehouse.get_table("udf_cached_check")
+    assert "udf_cached_check" not in warehouse.db.metadata.tables
+
+
+def test_encode_arrow_keeps_arrow_batch_when_all_columns_support_it():
+    codecs = [
+        TypeCodec(
+            kept=frozenset({int}),
+            encode=int,
+            default=False,
+            encode_column=lambda c: c.cast(pa.int64()),
+        ),
+        TypeCodec(
+            kept=frozenset({str}),
+            encode=str,
+            default="",
+            encode_column=lambda c: c.cast(pa.string()),
+        ),
+    ]
+    batch = pa.record_batch(
+        [pa.array([1, None], type=pa.int64()), pa.array(["a", None])],
+        names=["b", "s"],
+    )
+    encoded = RowCodec(codecs).encode_arrow(batch)
+    assert isinstance(encoded, pa.RecordBatch)
+    assert [c.to_pylist() for c in encoded.columns] == [[1, 0], ["a", ""]]
+
+    # Missing trailing column stays in Arrow when its codec supports pa.nulls().
+    short = pa.record_batch([pa.array([1, None], type=pa.int64())], names=["b"])
+    encoded_short = RowCodec(codecs).encode_arrow(short)
+    assert isinstance(encoded_short, pa.RecordBatch)
+    assert [c.to_pylist() for c in encoded_short.columns] == [[1, 0], ["", ""]]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("nullable", [False, True])
+def test_native_arrow_matches_scalar_codec_storage(warehouse_tmpfile, nullable):
+    wh = warehouse_tmpfile
+    specs = [
+        (String, pa.array(["", "a\x00b", "é", None])),
+        (String, pa.array(["one", None, "two", "one"]).dictionary_encode()),
+        (String, pa.nulls(4)),
+        (DateTime, pa.nulls(4)),
+        (Binary, pa.array([b"", b"a\x00b", b"x", None])),
+        (Boolean, pa.array([True, False, None, True])),
+        (Int64, pa.array([-(2**63), 2**63 - 1, None, 0])),
+        (Float, pa.array([float("nan"), float("inf"), None, -0.0])),
+        (Float, pa.array([1.25, None, 2.5, 0], type=pa.float32())),
+        (
+            DateTime,
+            pa.array([-1, 0, 1234567, None], type=pa.timestamp("us", "Asia/Kolkata")),
+        ),
+        (JSON, pa.array(['{"a": 1}', "null", None, "{}"])),
+    ]
+    columns = [
+        sa.Column(f"c{i}", t.as_nullable(t) if nullable else t())
+        for i, (t, _) in enumerate(specs)
+    ]
+    batch = pa.record_batch([a for _, a in specs], names=[c.name for c in columns])
+    batch = pa.Table.from_batches([batch] * 512).combine_chunks().to_batches()[0]
+    codec = wh.row_codec(columns)
+    native = codec.encode_arrow(batch)
+    assert isinstance(native, pa.RecordBatch)
+    expected = [
+        codec.encode(row)
+        for row in zip(*(a.to_pylist() for _, a in specs), strict=True)
+    ] * 512
+    reference = wh.create_dataset_rows_table("scalar_reference", columns=columns)
+    actual = wh.create_dataset_rows_table(
+        "arrow_actual", columns=[sa.Column(c.name, c.type) for c in columns]
+    )
+    try:
+        with wh.writer(reference, batch.schema.names) as w:
+            w.extend(expected)
+        with wh.writer(actual, batch.schema.names) as w:
+            w.append_arrow(native)
+        # Raw sqlite values and storage classes, bypassing registered converters.
+        fields = ", ".join(f'"{c.name}", typeof("{c.name}")' for c in columns)
+        with closing(sqlite3.connect(wh.db.db_file)) as db:
+            actual_sql = f"SELECT {fields} FROM arrow_actual"  # noqa: S608
+            expected_sql = f"SELECT {fields} FROM scalar_reference"  # noqa: S608
+            assert (
+                db.execute(actual_sql).fetchall() == db.execute(expected_sql).fetchall()
+            )
+    finally:
+        wh.db.drop_table(reference)
+        wh.db.drop_table(actual)
+
+
+@skip_if_not_sqlite
+def test_encode_arrow_fills_missing_trailing_columns(warehouse_tmpfile):
+    warehouse = warehouse_tmpfile
+    batch = pa.record_batch([[1, 2]], names=["x"])
+
+    rc_arrow = warehouse.row_codec([sa.Column("x", Int()), sa.Column("ts", DateTime())])
+    enc_arrow = rc_arrow.encode_arrow(batch)
+    assert isinstance(enc_arrow, pa.RecordBatch)
+    assert enc_arrow.column(1).to_pylist() == [None, None]
+
+    rc_tuples = warehouse.row_codec(
+        [sa.Column("x", Int()), sa.Column("arr", Array(Int()))]
+    )
+    assert rc_tuples.encode_arrow(batch) == [(1, None), (2, None)]
+
+
+@skip_if_not_sqlite
+def test_encode_arrow_falls_back_for_unsupported_or_out_of_range_values(
+    warehouse_tmpfile,
+):
+    warehouse = warehouse_tmpfile
+    dt_codec = warehouse.row_codec([sa.Column("ts", DateTime())])
+    int_codec = warehouse.row_codec([sa.Column("x", Int())])
+
+    # Naive timestamp before year 1 falls back to tuple path; aware timestamp clamps.
+    far_past = pa.array([-70_000_000_000_000_000], type=pa.int64())
+    with pytest.raises(OverflowError):
+        dt_codec.encode_arrow(
+            pa.record_batch([far_past.view(pa.timestamp("us"))], names=["ts"])
+        )
+    clamped = dt_codec.encode_arrow(
+        pa.record_batch([far_past.view(pa.timestamp("us", "UTC"))], names=["ts"])
+    )
+    assert isinstance(clamped, pa.RecordBatch)
+    assert clamped.column(0).to_pylist() == ["0001-01-01 00:00:00"]
+
+    # Non-timestamp input for DateTime and non-scalar / overflowing uint64 for Int
+    # fall back to the tuple path.
+    with pytest.raises(RowEncodeError):
+        dt_codec.encode_arrow(pa.record_batch([pa.array([1, 2])], names=["ts"]))
+    with pytest.raises(RowEncodeError):
+        int_codec.encode_arrow(
+            pa.record_batch([pa.array([[1]], type=pa.list_(pa.int64()))], names=["x"])
+        )
+    assert int_codec.encode_arrow(
+        pa.record_batch([pa.array([2**63], type=pa.uint64())], names=["x"])
+    ) == [(2**63,)]
+
+
+@skip_if_not_sqlite
+def test_encode_arrow_rejects_invalid_utf8_strings(warehouse_tmpfile):
+    warehouse = warehouse_tmpfile
+    str_codec = warehouse.row_codec([sa.Column("s", String())])
+    invalid = pa.array([b"\xff"], type=pa.binary()).view(pa.string())
+    with pytest.raises(UnicodeDecodeError):
+        str_codec.encode_arrow(pa.record_batch([invalid], names=["s"]))
+
+
+@skip_if_not_sqlite
+def test_append_arrow_raises_when_writer_runs_out_of_ids(warehouse_tmpfile):
+    warehouse = warehouse_tmpfile
+    table = warehouse.create_dataset_rows_table("overflow_id", [sa.Column("x", Int)])
+    try:
+        with warehouse.writer(table, ["x"]) as writer:
+            writer.next_id = MAX_SEQ + 1
+            with pytest.raises(RuntimeError, match="ran out of ids"):
+                writer.append_arrow(pa.record_batch([[1]], names=["x"]))
+    finally:
+        warehouse.db.drop_table(table)

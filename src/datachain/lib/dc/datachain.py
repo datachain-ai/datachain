@@ -25,6 +25,8 @@ from typing import (
 
 import sqlalchemy
 from pydantic import BaseModel
+from sqlalchemy.sql.elements import ColumnClause
+from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain import json, semver
 from datachain.checkpoint import CheckpointStatus
@@ -98,7 +100,7 @@ from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr, Column
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
 from datachain.utils import (
-    batched_it,
+    batched,
     checkpoints_enabled,
     env2bool,
     inside_notebook,
@@ -480,8 +482,9 @@ class DataChain:
     def job(self) -> Job:
         """Get the job for this chain.
 
-        Returns the existing job if running in SaaS, or creates a new one if
-        running locally.
+        Returns the existing job if running in Studio, or creates a new one if
+        running locally. In the rare case of an in-memory chain, it is a job of
+        the in-memory catalog instead.
         """
         if self._settings.ephemeral:
             raise RuntimeError(
@@ -878,14 +881,21 @@ class DataChain:
 
     def _get_or_create_project(self, namespace: str, project_name: str) -> Project:
         """Get project or raise if creation not allowed."""
+        catalog = self.session.catalog
+        metastore = catalog.metastore
+        if metastore.is_default_project(project_name, namespace):
+            return metastore.default_project
         try:
-            return self.session.catalog.metastore.get_project(
+            return metastore.get_project(
                 project_name,
                 namespace,
-                create=is_studio(),
+                create=is_studio() and not catalog.in_memory,
             )
         except ProjectNotFoundError as e:
-            raise ProjectCreateNotAllowedError("Creating project is not allowed") from e
+            where = " in memory" if catalog.in_memory else ""
+            raise ProjectCreateNotAllowedError(
+                f"Creating project is not allowed{where}"
+            ) from e
 
     def _record_checkpoint_reuse_access(
         self, dataset: DatasetRecord, version: str
@@ -993,7 +1003,7 @@ class DataChain:
                 namespace=project.namespace.name,
                 project=project.name,
                 version=dataset_version.version,
-                **kwargs,
+                **{"session": self.session, **kwargs},
             )
 
             # Reusing a completed save checkpoint skips QueryStep.apply(), so mark
@@ -1104,7 +1114,7 @@ class DataChain:
                 name,
                 namespace=project.namespace.name,
                 project=project.name,
-                **kwargs,
+                **{"session": self.session, **kwargs},
             )
             starting_step = result._query.starting_step
             if starting_step is not None:
@@ -2174,47 +2184,20 @@ class DataChain:
             return signals_schema.clone_without_sys_signals()
         return signals_schema
 
-    @overload
-    def _leaf_values(self) -> Iterator[tuple[Any, ...]]: ...
-
-    @overload
     def _leaf_values(
-        self, *, include_hidden: bool = ..., include_sentinels: bool = ...
-    ) -> Iterator[tuple[Any, ...]]: ...
-
-    @overload
-    def _leaf_values(
-        self,
-        *,
-        row_factory: Callable[[list[str], tuple[Any, ...]], _T],
-        include_hidden: bool = ...,
-        include_sentinels: bool = ...,
-    ) -> Iterator[_T]: ...
-
-    def _leaf_values(
-        self,
-        *,
-        row_factory=None,
-        include_hidden: bool = True,
-        include_sentinels: bool = False,
-    ):
+        self, *, include_hidden: bool = True, include_sentinels: bool = False
+    ) -> Iterator[tuple[Any, ...]]:
         """Yields flattened rows of values as a tuple.
 
         Args:
-            row_factory: A callable to convert row to a custom format.
-                It should accept two arguments: a list of column names and
-                a tuple of row values.
             include_hidden: Whether to include hidden signals from the schema.
             include_sentinels: Whether to select the `_type_tag` discriminator
                 column. Off by default; read reconstructs it from the leaf values.
         """
-        schema = self._effective_signals_schema
-        db_signals = schema.db_signals(
+        db_signals = self._effective_signals_schema.db_signals(
             include_hidden=include_hidden, include_sentinels=include_sentinels
         )
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
-            if row_factory:
-                rows = (row_factory(db_signals, r) for r in rows)  # type: ignore[assignment]
             yield from rows
 
     def to_columnar_data_with_names(
@@ -2238,12 +2221,12 @@ class DataChain:
         results_iter = self._leaf_values(include_sentinels=include_sentinels)
 
         def column_chunks() -> Iterator[list[list[Any]]]:
-            for chunk_iter in batched_it(results_iter, chunk_size):
-                columns: list[list[Any]] = [[] for _ in column_names]
-                for row in chunk_iter:
-                    for i, col in enumerate(columns):
-                        col.append(row[i])
-                yield columns
+            for chunk in batched(results_iter, chunk_size):
+                yield (
+                    [list(col) for col in zip(*chunk, strict=True)]
+                    if column_names
+                    else []
+                )
 
         return column_names, column_chunks()
 
@@ -2268,11 +2251,13 @@ class DataChain:
 
     def results(self, *, row_factory=None, include_hidden=True):
         """Return all rows, optionally built via ``row_factory``."""
+        rows = self._leaf_values(include_hidden=include_hidden)
         if row_factory is None:
-            return list(self._leaf_values(include_hidden=include_hidden))
-        return list(
-            self._leaf_values(row_factory=row_factory, include_hidden=include_hidden)
+            return list(rows)
+        names = self._effective_signals_schema.db_signals(
+            include_hidden=include_hidden, include_sentinels=False
         )
+        return [row_factory(names, row) for row in rows]
 
     def to_records(self) -> list[dict[str, Any]]:
         """Convert every row to a dictionary."""
@@ -2328,11 +2313,16 @@ class DataChain:
         )
         db_signals = signals_schema.db_signals()
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
+            if signals_schema.plain_columns() is not None:
+                # plain scalars only: the db row already is the result
+                yield from map(tuple, rows)
+                return
+            catalog, cache = self.session.catalog, self._settings.cache
+            read = signals_schema.row_reader(cast("list[str]", db_signals))
             for row in rows:
-                ret = signals_schema.row_to_features(
-                    row, catalog=self.session.catalog, cache=self._settings.cache
-                )
-                yield tuple(ret)
+                objs = read(row)
+                signals_schema.set_file_streams(objs, catalog, cache)
+                yield tuple(objs)
 
     def to_pytorch(
         self,
@@ -2446,8 +2436,24 @@ class DataChain:
                     on, right_on, "'on' and 'right_on' must have the same length'"
                 )
 
-        if self == right_ds:
+        right_keys = right_on or on
+        right_table = right_ds._query.table
+        if self._query.table.name == right_table.name:
             right_ds = right_ds.clone()
+
+            def rebind_right(element, **_kwargs):
+                if isinstance(element, ColumnClause) and element.table is right_table:
+                    column = sqlalchemy.column(element.name, element.type)
+                    column.table = right_ds._query.table
+                    return column
+                return None
+
+            right_keys = [
+                replacement_traverse(key, {}, rebind_right)
+                if isinstance(key, ColumnExpr)
+                else key
+                for key in right_keys
+            ]
 
         errors = []
 
@@ -2467,7 +2473,7 @@ class DataChain:
         ops = [
             _resolve(self, left, "left")
             == _resolve(right_ds, right, "right" if right_on else None)
-            for left, right in zip(on, right_on or on, strict=False)
+            for left, right in zip(on, right_keys, strict=False)
         ]
 
         if errors:
@@ -2475,16 +2481,29 @@ class DataChain:
                 on, right_on, f"Could not resolve {', '.join(errors)}"
             )
 
-        query = self._query.join(
-            right_ds._query, sqlalchemy.and_(*ops), inner, full, rname
-        )
-        query.feature_schema = None
-        ds = self._evolve(query=query)
-
         # Note: merge drops sys signals from both sides, make sure to not include it
         # in the resulting schema
         signals_schema = self.signals_schema.clone_without_sys_signals()
         right_signals_schema = right_ds.signals_schema.clone_without_sys_signals()
+
+        def _model_tags(schema: "SignalSchema") -> tuple[tuple[str, str], ...]:
+            return tuple(
+                (f"{k}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}", arm_selector(v))
+                for k, v in schema.values.items()
+                if ModelStore.is_pydantic(v)
+            )
+
+        query = self._query.join(
+            right_ds._query,
+            sqlalchemy.and_(*ops),
+            inner,
+            full,
+            rname,
+            left_tags=_model_tags(signals_schema) if full else (),
+            right_tags=_model_tags(right_signals_schema) if not inner else (),
+        )
+        query.feature_schema = None
+        ds = self._evolve(query=query)
 
         ds.signals_schema = signals_schema.merge(
             right_signals_schema,
@@ -3084,12 +3103,12 @@ class DataChain:
         if isinstance(path, str) and "://" in path:
             from datachain.client.fsspec import Client
 
+            client = Client.get_implementation(path)
+            storage = client.storage_uri(client.split_url(path)[0])
             fs_kwargs = {
-                **self._query.catalog.client_config,
+                **self._query.catalog.client_config_for(storage),
                 **(fs_kwargs or {}),
             }
-
-            client = Client.get_implementation(path)
 
             if path.startswith("file://"):
                 # pyarrow does not handle file:// uris, and needs a direct path instead.
@@ -3185,8 +3204,7 @@ class DataChain:
         with target.open("w", newline="", client_config=fs_kwargs) as f:
             writer = csv.writer(f, delimiter=delimiter, **kwargs)
             writer.writerow(column_names)
-            for row in self._leaf_values():
-                writer.writerow(row)
+            writer.writerows(self._leaf_values())
 
         return target
 

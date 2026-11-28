@@ -1,3 +1,4 @@
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -169,3 +170,19 @@ def test_parallel_checkpoint_recovery_no_duplicates(test_session_tmpfile, parall
     expected = {i * i for i in range(1, 101)}
     actual = set(output_values)
     assert actual == expected, f"Outputs don't match. Missing: {expected - actual}"
+
+
+def test_parallel_gen_in_ephemeral_mode_returns_every_row(test_session_tmpfile):
+    def twice(num: int) -> Iterator[int]:
+        time.sleep(0.01)
+        yield num
+        yield num + 1000
+
+    values = (
+        dc.read_values(num=list(range(200)), session=test_session_tmpfile)
+        .settings(ephemeral=True, parallel=2)
+        .gen(val=twice)
+        .to_values("val")
+    )
+
+    assert sorted(values) == [*range(200), *range(1000, 1200)]

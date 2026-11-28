@@ -68,7 +68,6 @@ def _compare(  # noqa: C901
     # all left and right columns
     cols = left.signals_schema.clone_without_sys_signals().db_signals()
     right_cols = right.signals_schema.clone_without_sys_signals().db_signals()
-    cols_select = list(left.signals_schema.clone_without_sys_signals().values.keys())
 
     left.signals_schema.reject_union_keys("diff", *on)
     right.signals_schema.reject_union_keys("diff", *(right_on or on))
@@ -158,17 +157,16 @@ def _compare(  # noqa: C901
     if not deleted:
         dc_diff = dc_diff.filter(C(diff_col) != CompareStatus.DELETED)
 
-    if status_col:
-        cols_select.append(diff_col)
-
-    dc_diff = dc_diff.select(*cols_select)
-
     # final schema is schema from the left chain with status column added if needed
-    dc_diff.signals_schema = (
+    final_schema = (
         schema if not status_col else SignalSchema({status_col: str}) | schema
     )
-
-    return dc_diff
+    return dc_diff._evolve(
+        query=dc_diff._query.select(
+            *final_schema.clone_without_sys_signals().db_signals()
+        ),
+        signal_schema=final_schema,
+    )
 
 
 def compare_and_split(

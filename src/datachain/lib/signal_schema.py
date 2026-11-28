@@ -14,8 +14,9 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import datetime
-from functools import cached_property, partial
+from functools import cached_property
 from inspect import isclass
+from operator import itemgetter
 from typing import (
     IO,
     TYPE_CHECKING,
@@ -46,7 +47,13 @@ from sqlalchemy.sql.visitors import iterate, replacement_traverse
 from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
-from datachain.lib.convert.flatten import iter_field_columns
+from datachain.lib.convert.flatten import (
+    classify_field,
+    flatten,
+    flatten_value,
+    iter_field_columns,
+    union_value_match,
+)
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import (
@@ -59,7 +66,6 @@ from datachain.lib.data_model import (
     TYPE_TAG_FIELD,
     DataModel,
     DataType,
-    DataValue,
     annotation_parts,
     arm_selector,
     compute_model_fingerprint,
@@ -85,7 +91,6 @@ if TYPE_CHECKING:
     from collections.abc import MutableMapping
 
     from datachain.catalog import Catalog
-    from datachain.dataset import RowDict
     from datachain.lib.data_model import UnionLayout
 
 
@@ -312,6 +317,10 @@ def create_feature_model(
     ModelStore.register(model)
 
     return model
+
+
+# Values a plain output column takes as they are: a result of them is its own row.
+_PLAIN_VALUE_TYPES = frozenset({str, int, float, bool, bytes, datetime, type(None)})
 
 
 class SignalReader(NamedTuple):
@@ -733,8 +742,10 @@ class SignalSchema:
             value = convert_scalar(reader.anno, value)
         return value, pos + 1
 
-    def row_to_objs(self, row_dict: "RowDict") -> list[Any]:
-        self._init_setup_values()
+    def row_reader(self, columns: Sequence[str]) -> Callable[[Any], list[Any]]:
+        """A function reading the signals' values from a db row of `columns`,
+        compiled once. Setup signals take their setup values."""
+        positions = {name: i for i, name in enumerate(columns)}
 
         def build_model(fr: type[BaseModel], j: dict) -> Any:
             try:
@@ -746,22 +757,101 @@ class SignalSchema:
                 raise
 
         read_model = _model_reader(build_model)
-        convert = partial(self._convert_feature_value, catalog=None, cache=False)
-        objs: list[Any] = []
+        convert = self._convert_feature_value
+        plan = []
         for name, reader in self._signal_plan.items():
-            if self.setup_values and name in self.setup_values:
-                objs.append(self.setup_values.get(name))
-                continue
-            row = [row_dict[col] for col in reader.columns]
-            obj, _ = self._read_signal(
-                reader,
-                row,
-                0,
-                read_model,
-                convert if self._row_conversion_required[name] else None,
-            )
-            objs.append(obj)
-        return objs
+            keys = [positions[c] for c in reader.columns]
+            getter = itemgetter(*keys) if keys else None
+            needs_convert = self._row_conversion_required[name]
+            plan.append((name, reader, getter, len(keys), needs_convert))
+
+        def read(row: Any) -> list[Any]:
+            self._init_setup_values()
+            setup = self.setup_values
+            objs = []
+            for name, reader, getter, size, needs_convert in plan:
+                if setup and name in setup:
+                    objs.append(setup[name])
+                    continue
+                values = getter(row) if getter is not None else ()
+                if size == 1:
+                    values = (values,)
+                obj, _ = self._read_signal(
+                    reader, values, 0, read_model, convert if needs_convert else None
+                )
+                objs.append(obj)
+            return objs
+
+        return read
+
+    def read_columns(self) -> list[str]:
+        """The db columns the signals are read from; setup signals read none."""
+        return [c for reader in self._signal_plan.values() for c in reader.columns]
+
+    def plain_columns(self) -> list[str] | None:
+        """The db columns of signals that read back as the values they hold: no
+        models, unions, conversions or setup values. None when any signal needs
+        more."""
+        if self.setup_func or any(self._row_conversion_required.values()):
+            return None
+        readers = self._signal_plan.values()
+        if any(r.layout is not None or r.model is not None for r in readers):
+            return None
+        return self.read_columns()
+
+    def plain_output(self) -> bool:
+        """True if no signal is a model or a union: a UDF result is then its
+        flat leaf values as they are."""
+        return not any(
+            union_layout(a) is not None or classify_field(a).is_model
+            for a in self.values.values()
+        )
+
+    def row_flattener(self) -> Callable[[Any], tuple]:
+        """A function turning one result of a UDF with this output schema (a
+        value, a tuple of values, or a model) into its flat leaf values in db
+        column order, compiled once. A result may hold fewer values than
+        declared (the arrow reader omits trailing signals), not more."""
+        annos = list(self.values.values())
+        names = list(self.values)
+        size = len(annos)
+        plain = self.plain_output()
+        is_plain = _PLAIN_VALUE_TYPES.__contains__
+
+        def obj_values(obj: Any) -> Sequence[Any]:
+            return flatten(obj) if isinstance(obj, BaseModel) else [obj]
+
+        def flatten_row(result: Any) -> tuple:
+            if plain:
+                if size == 1 and is_plain(type(result)):
+                    return (result,)
+                if (
+                    type(result) is tuple
+                    and len(result) == size
+                    and all(map(is_plain, map(type, result)))
+                ):
+                    return result
+            if size > 1 and not isinstance(result, BaseModel):
+                if len(result) > size:
+                    raise ValueError(
+                        f"UDF returned {len(result)} values but {size} are "
+                        "declared in output"
+                    )
+                flat: list[Any] = []
+                for i, (obj, anno) in enumerate(zip(result, annos, strict=False)):
+                    # names[i:] are the signals a cover model at this position holds
+                    if union_value_match(obj, anno, names[i:]):
+                        flat.extend(flatten_value(obj, anno))
+                    else:
+                        flat.extend(obj_values(obj))
+                return tuple(flat)
+            if isinstance(result, tuple):
+                return result
+            if size == 1:
+                return flatten_value(result, annos[0])
+            return tuple(obj_values(result))
+
+        return flatten_row
 
     def set_file_streams(
         self,
@@ -926,7 +1016,9 @@ class SignalSchema:
             # input expect a single column instead of the union's tag + arm slots.
             schema_inner, schema_opt = unwrap_optional(schema_type)
             if schema_opt:
-                schema_type = schema_inner
+                # A model keeps Optional so an absent one reaches the UDF as None.
+                if not ModelStore.is_pydantic(schema_inner):
+                    schema_type = schema_inner
                 param_inner, param_opt = unwrap_optional(param_type)
                 if param_opt:
                     param_type = param_inner
@@ -948,53 +1040,26 @@ class SignalSchema:
                 if schema_opt:
                     param_type = unwrap_optional(param_type)[0]
 
-            if param_type == schema_type or (
+            if param_type == schema_inner or (
                 isclass(param_type)
-                and isclass(schema_type)
+                and isclass(schema_inner)
                 and issubclass(param_type, File)
-                and issubclass(schema_type, File)
+                and issubclass(schema_inner, File)
             ):
                 schema[param] = schema_type
                 continue
 
             raise SignalResolvingError(
                 param.split("."),
-                f"types mismatch: {param_type} != {schema_type}",
+                f"types mismatch: {param_type} != {schema_inner}",
             )
 
         return SignalSchema(schema, setup)
-
-    def row_to_features(
-        self, row: Sequence, catalog: "Catalog", cache: bool = False
-    ) -> list[DataValue]:
-        def build_model(fr: type[BaseModel], j: dict) -> Any:
-            try:
-                obj = fr(**j)
-                SignalSchema._set_file_stream(obj, catalog, cache)
-                return obj
-            except ValidationError as e:
-                if self._all_values_none(j):
-                    logger.debug("Failed to create feature for %s: %s", fr, e)
-                    return None
-                raise
-
-        def convert_scalar(anno: DataType, value: Any) -> Any:
-            return self._convert_feature_value(anno, value, catalog, cache)
-
-        read_model = _model_reader(build_model)
-        res = []
-        pos = 0
-        for reader in self._signal_plan.values():
-            value, pos = self._read_signal(reader, row, pos, read_model, convert_scalar)
-            res.append(value)
-        return res
 
     def _convert_feature_value(
         self,
         annotation: DataType,
         value: Any,
-        catalog: "Catalog | None",
-        cache: bool,
     ) -> Any:
         """Convert raw DB value into declared annotation if needed."""
         if value is None:
@@ -1018,26 +1083,25 @@ class SignalSchema:
                 obj = annotation(**value)
             else:
                 return result
-            assert isinstance(obj, BaseModel)
-            if catalog is not None:
-                SignalSchema._set_file_stream(obj, catalog, cache)
             result = obj
         elif is_sequence_annotation(annotation):
             parts = annotation_parts(annotation)
             if parts and isinstance(value, (list, tuple)):
                 # `tuple[A, B]` is positional; every other collection is uniform
                 positional = is_tuple_annotation(annotation) and len(parts) > 1
-                converted = [
-                    self._convert_feature_value(
-                        parts[i] if positional and i < len(parts) else parts[0],
-                        item,
-                        catalog,
-                        cache,
-                    )
-                    if item is not None
-                    else None
-                    for i, item in enumerate(value)
-                ]
+                converted = (
+                    list(value)
+                    if not positional and not self._requires_row_conversion(parts[0])
+                    else [
+                        self._convert_feature_value(
+                            parts[i] if positional and i < len(parts) else parts[0],
+                            item,
+                        )
+                        if item is not None
+                        else None
+                        for i, item in enumerate(value)
+                    ]
+                )
                 # the DB hands back a list; a declared tuple must arrive as one
                 result = (
                     tuple(converted) if is_tuple_annotation(annotation) else converted
@@ -1053,14 +1117,14 @@ class SignalSchema:
                     if decode_keys:
                         try:
                             converted_key = self._convert_feature_value(
-                                key_type, json.loads(key), catalog, cache
+                                key_type, json.loads(key)
                             )
                         except ValueError:
                             # Declared type and stored key disagree; keep the raw key
                             # rather than failing the whole row.
                             converted_key = key
                     converted_val = (
-                        self._convert_feature_value(val_type, val, catalog, cache)
+                        self._convert_feature_value(val_type, val)
                         if val_type is not Any
                         else val
                     )
@@ -1732,11 +1796,15 @@ class SignalSchema:
         right_nullable: bool = False,
     ) -> "SignalSchema":
         def _nullable(type_: DataType, nullable: bool) -> DataType:
-            # widen scalars/unions; models/collections can't be Nullable on CH
+            # widen scalars/unions/models; collections can't be Nullable on CH
             inner, is_optional = unwrap_optional(type_)
             if not nullable or is_optional:
                 return type_
-            if inner in NULLABLE_SCALARS or union_layout(inner) is not None:
+            if (
+                inner in NULLABLE_SCALARS
+                or ModelStore.is_pydantic(inner)
+                or union_layout(inner) is not None
+            ):
                 return type_ | None  # type: ignore[return-value]
             return type_
 
