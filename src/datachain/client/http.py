@@ -166,7 +166,14 @@ class HTTPClient(Client):
         # blocks
         return super()._open_remote(file)
 
-    async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
+    async def get_file(
+        self,
+        lpath,
+        rpath,
+        callback,
+        version_id: str | None = None,
+        expected_size: int | None = None,
+    ):
         return await self.fs._get_file(lpath, rpath, callback=callback)
 
     async def _fetch_dir(self, prefix: str, pbar, result_queue) -> set[str]:

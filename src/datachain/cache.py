@@ -102,11 +102,18 @@ class Cache:  # noqa: PLW1641
             self.odb.delete(oid)
 
     async def download(
-        self, file: "File", client: "Client", callback: Callback | None = None
+        self,
+        file: "File",
+        client: "Client",
+        callback: Callback | None = None,
+        from_path: str | None = None,
     ) -> None:
+        """``from_path`` names the bytes to fetch, version included, if not the
+        file's own path at its version."""
         from dvc_objects.fs.utils import tmp_fname
 
-        from_path = file.get_fs_path()
+        version_id = None if from_path else file.version
+        from_path = from_path or file.get_fs_path()
         odb_fs = self.odb.fs
         tmp_info = odb_fs.join(self.odb.tmp_dir, tmp_fname())  # type: ignore[arg-type]
         size = file.size
@@ -127,7 +134,11 @@ class Cache:  # noqa: PLW1641
         )
         try:
             await client.get_file(
-                from_path, tmp_info, callback=cb, version_id=file.version
+                from_path,
+                tmp_info,
+                callback=cb,
+                version_id=version_id,
+                expected_size=size or None,  # a zero size is unknown
             )
             oid = file.get_hash()
             self.odb.add(tmp_info, odb_fs, oid, hardlink=True)
@@ -175,7 +186,11 @@ class ReadonlyCache(Cache):
         raise self._readonly_error("remove")
 
     async def download(
-        self, file: "File", client: "Client", callback: Callback | None = None
+        self,
+        file: "File",
+        client: "Client",
+        callback: Callback | None = None,
+        from_path: str | None = None,
     ) -> None:
         raise self._readonly_error("download")
 
