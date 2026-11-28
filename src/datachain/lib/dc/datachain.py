@@ -104,6 +104,7 @@ from datachain.utils import (
     checkpoints_enabled,
     env2bool,
     inside_notebook,
+    internal,
 )
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
@@ -351,7 +352,7 @@ class DataChain:
         )
 
         try:
-            print(chain.select("mistral_response").results())
+            print(chain.to_values("mistral_response"))
         except Exception as e:
             print(f"do you have the right Mistral API key? {e}")
         ```
@@ -387,11 +388,13 @@ class DataChain:
         return not bool(self.count())
 
     @property
+    @internal
     def delta(self) -> bool:
         """Return True if this chain is running in "delta" update mode."""
         return self._query.delta_spec is not None or bool(self._query.delta_sources())
 
     @property
+    @internal
     def delta_unsafe(self) -> bool:
         """Returns True if the chain runs in unsafe "delta" update mode."""
         if self._query.delta_spec is not None:
@@ -529,6 +532,7 @@ class DataChain:
         )
         print(self.schema, file=file)
 
+    @internal
     def clone(self) -> "Self":
         """Make a copy of the chain in a new table."""
         return self._evolve(query=self._query.clone(new_table=True))
@@ -2200,6 +2204,7 @@ class DataChain:
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
             yield from rows
 
+    @internal
     def to_columnar_data_with_names(
         self,
         chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE,
@@ -2249,6 +2254,7 @@ class DataChain:
     @overload
     def results(self, *, include_hidden: bool) -> list[tuple[Any, ...]]: ...
 
+    @internal
     def results(self, *, row_factory=None, include_hidden=True):
         """Return all rows, optionally built via ``row_factory``."""
         rows = self._leaf_values(include_hidden=include_hidden)
@@ -3788,6 +3794,7 @@ class DataChain:
         """Execute the chain."""
         return self._evolve(query=self._query.exec())
 
+    @internal
     def chunk(self, index: int, total: int) -> "Self":
         """Split a chain into smaller chunks for e.g. parallelization.
 

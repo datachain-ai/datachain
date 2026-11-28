@@ -15,6 +15,7 @@ from datachain.catalog import get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX
 from datachain.error import DataChainError, JobNotFoundError, TableMissingError
+from datachain.utils import internal
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -165,6 +166,7 @@ class Session:
         if Session.IN_MEMORY_SESSION is self:
             Session.IN_MEMORY_SESSION = None
 
+    @internal
     def get_job(self) -> "Job | None":
         """
         Return the current job if one exists, without creating a new one.
@@ -186,6 +188,7 @@ class Session:
 
         return None
 
+    @internal
     def get_or_create_job(self) -> "Job":
         """
         Get or create a Job for this process.
@@ -382,6 +385,7 @@ class Session:
         self._cleanup_catalogs[:] = [self.catalog]
 
     @classmethod
+    @internal
     def active(cls) -> "Session | None":
         """The session ``get()`` returns without arguments, without creating
         one: None when no session exists yet."""
@@ -390,6 +394,7 @@ class Session:
         return cls.GLOBAL_SESSION_CTX
 
     @classmethod
+    @internal
     def get(
         cls,
         session: "Session | None" = None,

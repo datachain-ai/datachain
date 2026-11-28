@@ -22,6 +22,7 @@ from datachain.lib.utils import (
     normalize_col_names,
     type_to_str,
 )
+from datachain.utils import internal
 
 _skip_optional_promotion: ContextVar[bool] = ContextVar(
     "_skip_optional_promotion", default=False
@@ -58,12 +59,32 @@ DataValue = BaseModel | int | str | float | bool | list | dict | bytes | datetim
 
 
 class DataModel(BaseModel):
-    """Pydantic model wrapper that registers model with `DataChain`."""
+    """Pydantic model wrapper that registers model with `DataChain`.
+
+    To leave fields out of `show()` by default, list them in `_hidden_fields`.
+    `show(include_hidden=True)` shows them, and they stay in the data and in
+    `to_pandas()`.
+
+    Example:
+        ```py
+        from typing import ClassVar
+
+        import datachain as dc
+
+        class Detection(dc.DataModel):
+            _hidden_fields: ClassVar[list[str]] = ["raw"]
+            label: str
+            raw: str
+
+        dc.read_values(det=[Detection(label="cat", raw="xyz")]).show()  # no `raw`
+        ```
+    """
 
     _version: ClassVar[int] = 1
     _hidden_fields: ClassVar[list[str]] = []
 
     @classmethod
+    @internal
     def __pydantic_init_subclass__(cls):
         """It automatically registers every declared DataModel child class."""
         promote_default_none(cls)
@@ -77,11 +98,6 @@ class DataModel(BaseModel):
             models = [models]
         for val in models:
             ModelStore.register(val)
-
-    @classmethod
-    def hidden_fields(cls) -> list[str]:
-        """Returns a list of fields that should be hidden from the user."""
-        return cls._hidden_fields
 
 
 def compute_model_fingerprint(
