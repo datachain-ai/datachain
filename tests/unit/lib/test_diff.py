@@ -638,6 +638,24 @@ def test_diff_compare_optional_detects_null_changes(test_session):
     assert sorted(modified) == [2, 3]  # None->5 and 3->None
 
 
+def test_diff_computed_keys(test_session):
+    from datachain import func
+
+    left = dc.read_values(
+        path=["a.jpg", "b.jpg", "c.jpg"], value=[1, 2, 3], session=test_session
+    ).mutate(key=func.path.file_stem("path"))
+    right = dc.read_values(
+        path=["b.png", "c.png", "d.png"], value=[20, 3, 4], session=test_session
+    ).mutate(key=func.path.file_stem("path"))
+    diff = left.diff(right, on="key", compare="value", same=True, status_col="status")
+    assert diff.order_by("key").to_list("key", "value", "status") == [
+        ("a", 1, "A"),
+        ("b", 2, "M"),
+        ("c", 3, "S"),
+        ("d", None, "D"),
+    ]
+
+
 def test_diff_model_signal_composes_with_union_and_merge(test_session):
     a = dc.read_values(
         k=[1, 2],
