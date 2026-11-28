@@ -4,8 +4,8 @@ import os
 import re
 import sys
 import traceback
-from collections.abc import Callable
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from copy import copy
 from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
@@ -86,6 +86,9 @@ class Session:
     _OWNS_JOB: ClassVar[bool | None] = None
     _JOB_HOOKS_REGISTERED: ClassVar[bool] = False
     _JOB_FINALIZE_HOOK: ClassVar[Callable[[], None] | None] = None
+    # The session that created the process job and finalizes it.
+    _JOB_SESSION: ClassVar["Session | None"] = None
+    _EXCEPT_HOOK_INSTALLED: ClassVar[bool] = False
 
     GLOBAL_SESSION_NAME = "global"
     SESSION_UUID_LEN = 6
@@ -280,10 +283,24 @@ class Session:
 
                 Session._JOB_FINALIZE_HOOK = _finalize_success_hook
                 atexit.register(Session._JOB_FINALIZE_HOOK)
+                Session._install_except_hook()
                 Session._JOB_HOOKS_REGISTERED = True
+            Session._JOB_SESSION = self
 
         assert Session._CURRENT_JOB is not None
         return Session._CURRENT_JOB
+
+    @contextmanager
+    def _job_catalog(self) -> Iterator["Catalog"]:
+        """This session's catalog on new connections: the session may be closed
+        already, or belong to another thread."""
+        with ExitStack() as connections:
+            catalog = self.catalog.copy()
+            catalog.metastore = self.catalog.metastore.clone(use_new_connection=True)
+            connections.callback(catalog.metastore.close_on_exit)
+            catalog.warehouse = self.catalog.warehouse.clone(use_new_connection=True)
+            connections.callback(catalog.warehouse.close_on_exit)
+            yield catalog
 
     def _finalize_job_success(self):
         """Mark the current job as completed."""
@@ -292,9 +309,10 @@ class Session:
             and Session._OWNS_JOB
             and Session._JOB_STATUS == JobStatus.RUNNING
         ):
-            self.catalog.metastore.set_job_status(
-                Session._CURRENT_JOB.id, JobStatus.COMPLETE
-            )
+            with self._job_catalog() as catalog:
+                catalog.metastore.set_job_status(
+                    Session._CURRENT_JOB.id, JobStatus.COMPLETE
+                )
             Session._JOB_STATUS = JobStatus.COMPLETE
 
     def _finalize_job_as_canceled(self):
@@ -304,9 +322,10 @@ class Session:
             and Session._OWNS_JOB
             and Session._JOB_STATUS == JobStatus.RUNNING
         ):
-            self.catalog.metastore.set_job_status(
-                Session._CURRENT_JOB.id, JobStatus.CANCELED
-            )
+            with self._job_catalog() as catalog:
+                catalog.metastore.set_job_status(
+                    Session._CURRENT_JOB.id, JobStatus.CANCELED
+                )
             Session._JOB_STATUS = JobStatus.CANCELED
 
     def _finalize_job_as_failed(self, exc_type, exc_value, tb):
@@ -317,19 +336,20 @@ class Session:
             and Session._JOB_STATUS == JobStatus.RUNNING
         ):
             error_stack = "".join(traceback.format_exception(exc_type, exc_value, tb))
-            self.catalog.metastore.set_job_status(
-                Session._CURRENT_JOB.id,
-                JobStatus.FAILED,
-                error_message=str(exc_value),
-                error_stack=error_stack,
-            )
+            with self._job_catalog() as catalog:
+                catalog.metastore.set_job_status(
+                    Session._CURRENT_JOB.id,
+                    JobStatus.FAILED,
+                    error_message=str(exc_value),
+                    error_stack=error_stack,
+                )
 
-            # Mark any incomplete dataset versions created by this job as FAILED
-            self.catalog.metastore.mark_job_dataset_versions_as_failed(
-                Session._CURRENT_JOB.id
-            )
-            # Finally clean all incomplete dataset versions
-            self.catalog.cleanup_dataset_versions(job_id=Session._CURRENT_JOB.id)
+                # Mark any incomplete dataset versions created by this job as FAILED
+                catalog.metastore.mark_job_dataset_versions_as_failed(
+                    Session._CURRENT_JOB.id
+                )
+                # Finally clean all incomplete dataset versions
+                catalog.cleanup_dataset_versions(job_id=Session._CURRENT_JOB.id)
 
             Session._JOB_STATUS = JobStatus.FAILED
 
@@ -442,12 +462,19 @@ class Session:
             session = cls.GLOBAL_SESSION_CTX
 
             atexit.register(cls._global_cleanup)
-            cls.ORIGINAL_EXCEPT_HOOK = sys.excepthook
-            sys.excepthook = cls.except_hook
+            cls._install_except_hook()
         else:
             session = cls.GLOBAL_SESSION_CTX
 
         return session
+
+    @classmethod
+    def _install_except_hook(cls) -> None:
+        # Only once: a hook set after ours may call ours back.
+        if not cls._EXCEPT_HOOK_INSTALLED:
+            cls.ORIGINAL_EXCEPT_HOOK = sys.excepthook
+            sys.excepthook = cls.except_hook
+            cls._EXCEPT_HOOK_INSTALLED = True
 
     @staticmethod
     def except_hook(exc_type, exc_value, exc_traceback):
@@ -456,16 +483,13 @@ class Session:
             original_hook(exc_type, exc_value, exc_traceback)
             return
 
-        if Session.GLOBAL_SESSION_CTX:
-            # Handle KeyboardInterrupt specially - mark as canceled and exit with
-            # signal code
-            if exc_type is KeyboardInterrupt:
-                Session.GLOBAL_SESSION_CTX._finalize_job_as_canceled()
-            else:
-                Session.GLOBAL_SESSION_CTX._finalize_job_as_failed(
-                    exc_type, exc_value, exc_traceback
-                )
-            Session.GLOBAL_SESSION_CTX.__exit__(exc_type, exc_value, exc_traceback)
+        # Handle KeyboardInterrupt specially - mark as canceled and exit with
+        # signal code
+        job_session = Session._JOB_SESSION
+        if job_session and exc_type is KeyboardInterrupt:
+            job_session._finalize_job_as_canceled()
+        elif job_session:
+            job_session._finalize_job_as_failed(exc_type, exc_value, exc_traceback)
 
         Session._global_cleanup()
 
@@ -499,9 +523,11 @@ class Session:
         cls._OWNS_JOB = None
         cls._JOB_HOOKS_REGISTERED = False
         cls._JOB_FINALIZE_HOOK = None
+        cls._JOB_SESSION = None
 
         if cls.ORIGINAL_EXCEPT_HOOK:
             sys.excepthook = cls.ORIGINAL_EXCEPT_HOOK
+        cls._EXCEPT_HOOK_INSTALLED = False
 
     @staticmethod
     def _global_cleanup():
