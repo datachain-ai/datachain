@@ -64,7 +64,7 @@ import datachain as dc
 # Expand one video into thousands of frames
 chain = (
     dc.read_storage("s3://bucket/videos/", type="video")
-    .gen(frame=lambda file: file.get_frames(step=30))
+    .gen(frame=lambda file: file.sample_frames(fps=1))
     .save("video_frames")
 )
 

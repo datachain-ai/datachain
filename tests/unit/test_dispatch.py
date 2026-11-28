@@ -1,22 +1,29 @@
 import os
 import queue as queue_mod
+from concurrent.futures import ThreadPoolExecutor
 from queue import Empty, Full
+from threading import Barrier
 from unittest.mock import MagicMock
 
 import pytest
 
+from datachain.query.batch import NoBatching
 from datachain.query.dispatch import (
     FINISHED_STATUS,
     STOP_SIGNAL,
     DownloadCallback,
     ProcessedCallback,
+    UDFDispatcher,
     UDFWorker,
     WorkerStats,
     get_from_queue,
     get_n_workers_from_arg,
+    guided_tasks,
     put_into_queue,
     udf_entrypoint,
+    udf_worker_entrypoint,
 )
+from datachain.query.udf import UdfInfo
 
 
 class MockQueue:
@@ -144,6 +151,237 @@ def test_worker_flushes_progress_when_processing_fails(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "items,total,workers,max_size",
+    [
+        (255, 255, 8, 31),
+        (1, 1, 4, 1),
+        (16, 16, 8, 2),
+        (100_000, 100_000, 4, 10_000),
+        (7, 7, 16, 1),
+        (10, 3, 2, 5),
+    ],
+)
+def test_guided_tasks_cover_items_once_and_end_with_single_items(
+    items, total, workers, max_size
+):
+    tasks = list(guided_tasks(range(items), total, workers, max_size))
+    sizes = [len(t) for t in tasks]
+
+    assert [i for t in tasks for i in t] == list(range(items))
+    assert max(sizes) <= max_size
+    assert sizes == sorted(sizes, reverse=True)
+    assert sizes[-min(workers, len(sizes)) :] == [1] * min(workers, len(sizes))
+
+
+@pytest.mark.parametrize("workers,max_size", [(0, 1), (-1, 1), (1, 0)])
+def test_guided_tasks_require_positive_limits(workers, max_size):
+    with pytest.raises(ValueError, match="must be positive"):
+        list(guided_tasks(range(3), 3, workers, max_size))
+
+
+@pytest.fixture
+def dispatcher(mocker):
+    return UDFDispatcher(
+        UdfInfo(
+            udf_data=b"",
+            catalog_init={},
+            metastore_clone_params=(object, [], {}),
+            warehouse_clone_params=(object, [], {}),
+            query=mocker.sentinel.query,
+            table=mocker.sentinel.table,
+            udf_fields=[],
+            batching=NoBatching(),
+            processes=True,
+            is_generator=False,
+            cache=False,
+            rows_total=8,
+            batch_size=None,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "requested,rows,workers",
+    [
+        (True, 8, 8),
+        (True, 2, 2),
+        (8, 2, 2),
+        (8, 1, 1),
+        (8, 0, 1),
+        (False, 8, 1),
+        (16, 32, 16),
+    ],
+)
+@pytest.mark.parametrize("fail", [False, True])
+def test_dispatch_preserves_parent_environment(
+    dispatcher, monkeypatch, mocker, requested, rows, workers, fail
+):
+    dispatcher.processes = requested
+    dispatcher.rows_total = rows
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: 8)
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    before = dict(os.environ)
+
+    def run(*args):
+        assert dict(os.environ) == before
+        if workers > 1:
+            assert args[0] == workers
+        if fail:
+            raise RuntimeError("UDF failed")
+
+    selected = "run_udf_single" if workers == 1 else "run_udf_parallel"
+    other = "run_udf_parallel" if workers == 1 else "run_udf_single"
+    execution = mocker.patch.object(dispatcher, selected, side_effect=run)
+    mocker.patch.object(dispatcher, other, side_effect=AssertionError)
+
+    if fail:
+        with pytest.raises(RuntimeError, match="UDF failed"):
+            dispatcher.run_udf([])
+    else:
+        dispatcher.run_udf([])
+
+    execution.assert_called_once()
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_worker_sets_cpu_share_before_loading_udf(
+    dispatcher, monkeypatch, mocker, fail
+):
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    before = dict(os.environ)
+    worker = mocker.Mock()
+
+    seen_indices: list[int] = []
+
+    def create(worker_index: int = 0):
+        seen_indices.append(worker_index)
+        assert os.environ["DATACHAIN_WORKER_THREADS"] == "2"
+        assert os.environ["OMP_NUM_THREADS"] == "2"
+        assert os.environ["MKL_NUM_THREADS"] == "1"
+        if fail:
+            raise RuntimeError("UDF failed to load")
+        return worker
+
+    mocker.patch.object(dispatcher, "_create_worker", side_effect=create)
+    if fail:
+        with pytest.raises(RuntimeError, match="UDF failed to load"):
+            dispatcher._run_worker(3, 4)
+    else:
+        dispatcher._run_worker(4)
+        dispatcher._run_worker(3, 4)
+        assert worker.run.call_count == 2
+        assert seen_indices == [0, 3]
+    assert dict(os.environ) == before
+
+
+def test_overlapping_in_process_dispatch_does_not_change_thread_limits(
+    dispatcher, monkeypatch, mocker
+):
+    dispatcher.processes = False
+    monkeypatch.setenv("OMP_NUM_THREADS", "7")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    barrier = Barrier(2)
+
+    def run(*_args):
+        barrier.wait(timeout=2)
+        assert os.environ["OMP_NUM_THREADS"] == "7"
+        assert "DATACHAIN_WORKER_THREADS" not in os.environ
+
+    mocker.patch.object(dispatcher, "run_udf_single", side_effect=run)
+    mocker.patch(
+        "datachain.query.dispatch.worker_thread_limits", side_effect=AssertionError
+    )
+    with ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(dispatcher.run_udf, []) for _ in range(2)]
+        for future in futures:
+            future.result(timeout=3)
+
+
+def test_studio_entrypoint_budgets_single_worker(dispatcher, monkeypatch, mocker):
+    dispatcher.processes = False
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    before = dict(os.environ)
+
+    def run(*_args):
+        assert os.environ["OMP_NUM_THREADS"] == "8"
+        assert os.environ["DATACHAIN_WORKER_THREADS"] == "8"
+
+    execute = mocker.patch.object(dispatcher, "run_udf_single", side_effect=run)
+    distributor = mocker.Mock()
+    distributor.run_udf.side_effect = lambda: dispatcher.run_udf([]) or 0
+    mocker.patch(
+        "datachain.query.dispatch.get_udf_distributor_class", return_value=distributor
+    )
+    assert udf_worker_entrypoint() == 0
+    execute.assert_called_once()
+    assert dict(os.environ) == before
+
+
+def test_worker_start_failure_cleans_up_and_restores_environment(
+    dispatcher, mocker, monkeypatch
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: 2)
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 2)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    before = dict(os.environ)
+    first, second = mocker.Mock(), mocker.Mock()
+    first.is_alive.side_effect = [True, False]
+    second.is_alive.return_value = False
+
+    def start():
+        assert os.environ["OMP_NUM_THREADS"] == "1"
+        assert os.environ["DATACHAIN_WORKER_THREADS"] == "1"
+
+    first.start.side_effect = start
+    second.start.side_effect = OSError("worker could not start")
+    mocker.patch.object(dispatcher.ctx, "Process", side_effect=[first, second])
+
+    with pytest.raises(OSError, match="worker could not start"):
+        dispatcher.run_udf([])
+
+    first.terminate.assert_called_once()
+    for queue in (dispatcher.task_queue, dispatcher.done_queue):
+        with pytest.raises(ValueError, match="closed"):
+            queue.put_nowait(1)
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("units", [0, 1, 2, 12])
+def test_batched_workers_share_cpus_between_actual_work_units(
+    dispatcher, mocker, monkeypatch, units
+):
+    dispatcher.is_batching = True
+    dispatcher.rows_total = 2000
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: 8)
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 8)
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    batches = [list(range(i * 100, (i + 1) * 100)) for i in range(units)]
+    workers = max(1, min(units, 8))
+
+    def run(*args):
+        if workers > 1:
+            assert args[0] == workers
+        inputs = args[1] if workers > 1 else args[0]
+        assert list(inputs) == batches
+        assert "DATACHAIN_WORKER_THREADS" not in os.environ
+
+    selected = "run_udf_single" if workers == 1 else "run_udf_parallel"
+    other = "run_udf_parallel" if workers == 1 else "run_udf_single"
+    execution = mocker.patch.object(dispatcher, selected, side_effect=run)
+    mocker.patch.object(dispatcher, other, side_effect=AssertionError)
+    dispatcher.run_udf(iter(batches))
+    execution.assert_called_once()
+
+
+@pytest.mark.parametrize(
     "cpus,requested,expected", [(8, None, 8), (1, None, 1), (8, 12, 12)]
 )
 def test_worker_count_respects_cpu_quota_and_explicit_override(
@@ -152,6 +390,51 @@ def test_worker_count_respects_cpu_quota_and_explicit_override(
     monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: cpus)
 
     assert get_n_workers_from_arg(requested) == expected
+
+
+@pytest.mark.parametrize("sizes", [[100] * 100, [1, 1, 1, 1000]])
+def test_batched_udf_groups_tasks_without_splitting_work_units(
+    dispatcher, mocker, sizes
+):
+    dispatcher.is_batching = True
+    dispatcher.rows_total = sum(sizes)
+    batches = [list(range(i * 1000, i * 1000 + size)) for i, size in enumerate(sizes)]
+    task_queue, done_queue = mocker.Mock(), mocker.Mock()
+    done_queue.get_nowait.side_effect = [{"status": FINISHED_STATUS}] * 4
+    mocker.patch.object(dispatcher.ctx, "Queue", side_effect=[task_queue, done_queue])
+    mocker.patch.object(dispatcher.ctx, "Process")
+    mocker.patch.object(dispatcher, "_shutdown_workers")
+
+    dispatcher.run_udf_parallel(4, batches, None, None, None)
+
+    queued = [
+        call.args[0]
+        for call in task_queue.put_nowait.call_args_list
+        if call.args[0] != STOP_SIGNAL
+    ]
+    assert [batch for task in queued for batch in task] == batches
+    assert queued[:4] == [(batch,) for batch in batches[:4]]
+    if len(batches) > 4:
+        assert 4 < len(queued) < len(batches)
+    else:
+        assert len(queued) == 4
+
+
+@pytest.mark.parametrize("estimate", [0, 1000])
+def test_guided_tasks_keep_query_count_bounded_with_an_underestimate(estimate):
+    tasks = list(guided_tasks(range(100_000), estimate, 8, 10_000))
+    assert [item for task in tasks for item in task] == list(range(100_000))
+    assert len(tasks) < 1000
+    assert max(map(len, tasks)) <= 10_000
+
+
+@pytest.mark.parametrize("estimate", [0, 20_000])
+def test_small_partitions_do_not_require_a_query_per_partition(estimate):
+    partitions = [list(range(i, i + 2)) for i in range(0, 20_000, 2)]
+    tasks = list(guided_tasks(partitions, estimate, 4, 10_000, weight=len))
+    assert [partition for task in tasks for partition in task] == partitions
+    assert 4 < len(tasks) < 200
+    assert max(sum(map(len, task)) for task in tasks) <= 10_000
 
 
 @pytest.mark.parametrize("injected", [False, True])
@@ -166,3 +449,67 @@ def test_udf_entrypoint_restores_only_injected_safe_path(monkeypatch, mocker, in
         udf_entrypoint()
     assert ("PYTHONSAFEPATH" in os.environ) is not injected
     assert "_DATACHAIN_UDF_SAFE_PATH" not in os.environ
+
+
+def test_skewed_partitions_do_not_pack_all_small_partitions_with_huge_tail():
+    partitions = [[i] * 10 for i in range(20)] + [list(range(10_000))]
+    tasks = list(guided_tasks(partitions[4:], 10_160, 4, 10_000, weight=len))
+    assert [p for task in tasks for p in task] == partitions[4:]
+    # The trailing 10,000-row partition stays in its own task, and the 16 small
+    # partitions are spread across multiple tasks rather than lumped into one.
+    assert tasks[-1] == (partitions[-1],)
+    assert len(tasks) >= 8
+
+
+def test_parallel_dispatch_buffers_without_draining_entire_input_iterator(
+    dispatcher, mocker
+):
+    dispatcher.rows_total = 100_000
+    pulled = 0
+
+    def pages():
+        nonlocal pulled
+        for i in range(10):
+            pulled += 1
+            yield list(range(i * 10_000, (i + 1) * 10_000))
+
+    task_queue, done_queue = mocker.Mock(), mocker.Mock()
+    done_queue.get_nowait.side_effect = [{"status": FINISHED_STATUS}] * 4
+    mocker.patch.object(dispatcher.ctx, "Queue", side_effect=[task_queue, done_queue])
+    mocker.patch.object(dispatcher.ctx, "Process")
+    mocker.patch.object(dispatcher, "_shutdown_workers")
+
+    dispatcher.run_udf_parallel(4, pages(), None, None, None)
+
+    assert pulled < 10
+
+
+def test_run_udf_batched_sequence_caps_workers_and_computes_rows_total(
+    dispatcher, mocker
+):
+    dispatcher.is_batching = True
+    dispatcher.processes = 4
+    run_parallel = mocker.patch.object(dispatcher, "run_udf_parallel")
+    batches = [[1, 2, 3], [4, 5]]
+    dispatcher.run_udf(batches)
+    assert dispatcher.rows_total == 5
+    run_parallel.assert_called_once()
+    assert run_parallel.call_args.args[0] == 2
+
+
+def test_run_udf_parallel_rescales_batch_count_rows_total(dispatcher, mocker):
+    dispatcher.is_batching = True
+    dispatcher.rows_total = 10  # batch count rather than total rows
+    batches = [list(range(i, i + 5)) for i in range(0, 50, 5)]
+    task_queue, done_queue = mocker.Mock(), mocker.Mock()
+    done_queue.get_nowait.side_effect = [{"status": FINISHED_STATUS}] * 4
+    mocker.patch.object(dispatcher.ctx, "Queue", side_effect=[task_queue, done_queue])
+    mocker.patch.object(dispatcher.ctx, "Process")
+    mocker.patch.object(dispatcher, "_shutdown_workers")
+    dispatcher.run_udf_parallel(4, iter(batches), None, None, None)
+    queued = [
+        call.args[0]
+        for call in task_queue.put_nowait.call_args_list
+        if call.args[0] != STOP_SIGNAL
+    ]
+    assert [batch for task in queued for batch in task] == batches
