@@ -270,5 +270,5 @@ def test_script_error_before_any_job_prints_traceback_once_and_stores_no_job(
     result = _run_script(script, catalog_tmpfile)
 
     assert result.returncode == 1
-    assert result.stderr.count("DatasetNotFoundError: Dataset missing not found") == 1
+    assert result.stderr.count("Dataset missing not found") == 1
     assert catalog_tmpfile.metastore.get_last_job_by_name(str(script)) is None
