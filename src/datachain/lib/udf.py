@@ -712,6 +712,9 @@ def _batch_results(result: Any, expected: int, label: str) -> list[Any]:
 class Mapper(UDFBase):
     """Inherit from this class to pass to `DataChain.map()`.
 
+    `process()` gets one row's values and returns one result, or a tuple for
+    several output columns.
+
     For lists of rows per call, use `BatchMapper` with `DataChain.batch_map()`.
     """
 
@@ -1012,7 +1015,11 @@ def _key_presence_values(
 
 
 class Generator(UDFBase):
-    """Inherit from this class to pass to `DataChain.gen()`."""
+    """Inherit from this class to pass to `DataChain.gen()`.
+
+    `process()` gets one row's values and yields any number of results. Each
+    becomes a new row.
+    """
 
     is_output_batched = True
     udf_kind = "gen"
@@ -1137,7 +1144,11 @@ class Generator(UDFBase):
 
 
 class Aggregator(UDFBase):
-    """Inherit from this class to pass to `DataChain.agg()`."""
+    """Inherit from this class to pass to `DataChain.agg()`.
+
+    `process()` gets, for each parameter, the list of values from all rows in
+    a `partition_by` group, and yields any number of results.
+    """
 
     is_input_batched = True
     is_output_batched = True
