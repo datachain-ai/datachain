@@ -621,11 +621,11 @@ def test_patterns_read_a_page_as_s3_writes_it(s3_bodies):
 
     assert (count, v_count) == (1, 1)
     assert [tuple(r) for r in page.rows] == [
-        ("s3://b", "p/a b&c", 1, "", "e", True, WHEN, None)
+        ("s3://b", "p/a b&c", 1, "", "e", True, WHEN, None, "")
     ]
     assert (page.folders, page.last, page.token) == (("p/z 1&/",), "p/z 1&/", "t+1")
     assert [tuple(r) for r in versions.rows] == [
-        ("s3://b", "p/a b&c", 1, "v1", "e", True, WHEN, None)
+        ("s3://b", "p/a b&c", 1, "v1", "e", True, WHEN, None, "")
     ]
     assert (versions.folders, versions.last, versions.token) == (
         ("p/z 1&/",),

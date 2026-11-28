@@ -601,12 +601,12 @@ def ensure_listing(
 
 def rows_digest(rows: Iterable[tuple], with_etag: bool) -> int:
     """The sum of a 128-bit hash of each ``FileRow`` row's identity: its source,
-    path, version id (or etag if it has none), size, whether it is the latest
-    version, and its etag when ``with_etag``. A sum, not XOR, so that a file
-    listed twice counts twice; the order of rows does not matter."""
+    path, version id (or md5, or etag if it has neither), size, whether it is the
+    latest version, and its etag when ``with_etag``. A sum, not XOR, so that a
+    file listed twice counts twice; the order of rows does not matter."""
     total = 0
-    for source, path, size, version, etag, is_latest, *_ in rows:
-        key = f"{source}\0{path}\0{version or etag}\0{size}\0{is_latest:d}"
+    for source, path, size, version, etag, is_latest, _, _, md5 in rows:
+        key = f"{source}\0{path}\0{version or md5 or etag}\0{size}\0{is_latest:d}"
         if with_etag:
             key += f"\0{etag}"
         digest = blake2b(key.encode(errors="surrogatepass"), digest_size=16)

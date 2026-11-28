@@ -5532,6 +5532,7 @@ def test_schema_flatten(test_session):
         "file.is_latest": bool,
         "file.last_modified": dt.datetime,
         "file.location": File.model_fields["location"].annotation,
+        "file.md5": str,
         "nested.label": str,
         "nested.fr.nnn": str,
         "nested.fr.count": int,
@@ -5546,6 +5547,7 @@ def test_schema_flatten(test_session):
         "  is_latest: bool\n"
         "  last_modified: datetime\n"
         "  location: Union[dict, list[dict], NoneType]\n"
+        "  md5: str\n"
         "nested: MyNested\n"
         "  label: str\n"
         "  fr: MyFr\n"
@@ -7613,6 +7615,7 @@ def test_union_does_not_break_schema_order(test_session):
         "file__is_latest",
         "file__last_modified",
         "file__location",
+        "file__md5",
         "meta__name",
         "meta__count",
     ]

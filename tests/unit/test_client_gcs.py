@@ -436,3 +436,74 @@ def test_gcs_small_reads_share_one_block_request(
         for _ in range(8):
             assert stream.read(16) == b"a" * 16
     assert fetched_bytes == [1040, 1]
+
+
+def test_gcs_md5_decoded_to_hex_and_absent_fallback():
+    import base64
+
+    md5_hex = "d41d8cd98f00b204e9800998ecf8427e"
+    md5_b64 = base64.b64encode(bytes.fromhex(md5_hex)).decode()
+    client = _make_client()
+
+    with_md5 = {
+        "name": "a.txt",
+        "size": "5",
+        "generation": "7",
+        "etag": "e1",
+        "md5Hash": md5_b64,
+        "updated": "2026-10-01T00:00:00Z",
+    }
+    assert client._file_row(with_md5).md5 == md5_hex
+    assert client.info_to_file(with_md5, "a.txt").md5 == md5_hex
+
+    composite = {k: v for k, v in with_md5.items() if k != "md5Hash"}
+    assert client._file_row(composite).md5 == ""
+    assert client.info_to_file(composite, "a.txt").md5 == ""
+
+
+def test_gcs_unpinned_check_unchanged_uses_md5_when_present():
+    import base64
+
+    md5_1 = "d41d8cd98f00b204e9800998ecf8427e"
+    md5_2 = "098f6bcd4621d373cade4e832627b4f6"
+    b64_1 = base64.b64encode(bytes.fromhex(md5_1)).decode()
+    b64_2 = base64.b64encode(bytes.fromhex(md5_2)).decode()
+
+    client = _make_client()
+    remote_info = {
+        "name": "gs://foo/blob.txt",
+        "size": 42,
+        "etag": "etag-after-acl-change",
+        "md5Hash": b64_1,
+        "updated": "2024-01-02T00:00:00Z",
+    }
+    client._fs._info = AsyncMock(return_value=remote_info)
+
+    file = File(source="gs://foo", path="blob.txt", etag="old-etag", md5=md5_1)
+    client.check_unchanged(file)
+    client.check_unchanged(file, info=remote_info)
+
+    changed_info = {**remote_info, "md5Hash": b64_2}
+    client._fs._info = AsyncMock(return_value=changed_info)
+    with pytest.raises(FileNotFoundError, match=f"md5 was {md5_1}, now {md5_2}"):
+        client.check_unchanged(file)
+    with pytest.raises(FileNotFoundError, match=f"md5 was {md5_1}, now {md5_2}"):
+        client.check_unchanged(file, info=changed_info)
+
+    composite = File(source="gs://foo", path="blob.txt", etag="old-etag", md5="")
+    with pytest.raises(
+        FileNotFoundError, match="etag was old-etag, now etag-after-acl-change"
+    ):
+        client.check_unchanged(composite, info=remote_info)
+
+
+def test_file_get_hash_uses_md5_when_present():
+    g1 = File(source="gs://b", path="a.txt", etag="e1", md5="abc123")
+    g2 = File(source="gs://b", path="a.txt", etag="e2", md5="abc123")
+    g3 = File(source="gs://b", path="a.txt", etag="e2", md5="def456")
+    assert g1.get_hash() == g2.get_hash()
+    assert g1.get_hash() != g3.get_hash()
+
+    s1 = File(source="s3://b", path="a.txt", etag="e1")
+    s2 = File(source="s3://b", path="a.txt", etag="e2")
+    assert s1.get_hash() != s2.get_hash()

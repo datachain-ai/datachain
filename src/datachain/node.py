@@ -56,6 +56,7 @@ class Node:
     sys__rand: int = 0
     path: str = ""
     etag: str = ""
+    md5: str = ""
     version: str | None = None
     is_latest: bool = True
     last_modified: datetime | None = None
@@ -102,6 +103,7 @@ class Node:
             size=self.size,
             version=self.version or "",
             etag=self.etag,
+            md5=self.md5,
             is_latest=self.is_latest,
             location=self.location,
             last_modified=self.last_modified or TIME_ZERO,
@@ -113,6 +115,7 @@ class Node:
             source=StorageURI(f.source),
             path=f.path,
             etag=f.etag,
+            md5=f.md5,
             is_latest=f.is_latest,
             size=f.size,
             last_modified=f.last_modified,
@@ -132,6 +135,7 @@ class Node:
             source=_dval("source"),
             path=_dval("path"),
             etag=_dval("etag"),
+            md5=_dval("md5") or "",
             is_latest=_dval("is_latest"),
             size=_dval("size"),
             last_modified=_dval("last_modified"),

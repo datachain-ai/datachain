@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from datachain.func import case, ifelse, isnone, or_
+from datachain.func import and_, case, ifelse, isnone, or_
 from datachain.lib.signal_schema import SignalSchema
 from datachain.query.schema import Column
 
@@ -36,9 +36,11 @@ def _compare(  # noqa: C901
     modified: bool = True,
     same: bool = True,
     status_col: str | None = None,
+    md5: tuple[str, str] | None = None,
 ) -> "DataChain":
     """Comparing two chains by identifying rows that are added, deleted, modified
-    or same"""
+    or same. ``md5`` names a File's left and right MD5 signals: where both are
+    set, they decide instead of the last ``compare`` pair (the etag)."""
     rname = "right_"
     schema = left.signals_schema  # final chain must have schema from left chain
 
@@ -117,10 +119,17 @@ def _compare(  # noqa: C901
             return or_(C(lc) != right_col, isnone(C(lc)) != isnone(right_col))
 
         modified_cond = or_(  # type: ignore[assignment]
-            *[
-                _differs(c, rc)
-                for c, rc in zip(compare, right_compare, strict=False)  # type: ignore[arg-type]
-            ]
+            *_by_md5(
+                [
+                    _differs(c, rc)
+                    for c, rc in zip(compare, right_compare, strict=False)  # type: ignore[arg-type]
+                ],
+                _differs,
+                left,
+                right,
+                md5,
+                rname,
+            )
         )
 
     dc_diff = left.merge(
@@ -256,3 +265,15 @@ def compare_and_split(
         chains[CompareStatus.SAME.value] = filter_by_status(CompareStatus.SAME)
 
     return chains
+
+
+def _by_md5(differs: list, compare, left, right, md5, rname: str) -> list:
+    """``differs`` with its last item, the etag, replaced by comparing the MD5
+    signals ``md5`` where both rows have one."""
+    if not md5:
+        return differs
+    lm = left.signals_schema.resolve(md5[0]).db_signals()[0]
+    rm = right.signals_schema.resolve(md5[1]).db_signals()[0]
+    right_md5 = C(f"{rname}{rm}") if lm == rm else C(rm)
+    both = and_(C(lm) != "", right_md5 != "")
+    return [*differs[:-1], ifelse(both, compare(lm, rm), differs[-1])]

@@ -766,6 +766,7 @@ class AbstractWarehouse(ABC, Serializable):
             with_default(dr.c("rand", column="sys")),
             dr.c("location"),
             de.c(q, "source"),
+            *([with_default(dr.c("md5"))] if dr.col_name("md5") in dr.columns else []),
         ).select_from(q.outerjoin(dr.table, q.c.sys__id == dr.c("id", column="sys")))
 
     def get_node_by_path(self, dataset_rows: "DataTable", path: str) -> Node:

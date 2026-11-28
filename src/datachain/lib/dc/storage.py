@@ -17,6 +17,8 @@ from datachain.lib.file import File, FileRow, FileType, get_file_type
 from datachain.lib.storage_config import client_configs, session_for
 from datachain.query import Session
 
+DEFAULT_DELTA_ON = ("file.path", "file.etag", "file.version")
+
 if TYPE_CHECKING:
     import pandas as pd
     import pyarrow as pa
@@ -39,11 +41,7 @@ def read_storage(
     anon: bool | None = None,
     versions: bool = True,
     delta: bool | None = False,
-    delta_on: str | Sequence[str] | None = (
-        "file.path",
-        "file.etag",
-        "file.version",
-    ),
+    delta_on: str | Sequence[str] | None = DEFAULT_DELTA_ON,
     delta_result_on: str | Sequence[str] | None = None,
     delta_compare: str | Sequence[str] | None = None,
     delta_retry: bool | str | None = None,
@@ -85,7 +83,11 @@ def read_storage(
             Default is False.
         delta_on: Field(s) that uniquely identify each record in the source data.
             Used to detect which records are new or changed.
-            Default is ("file.path", "file.etag", "file.version").
+            Default is ("file.path", "file.etag", "file.version"); on GCS with
+            versions, ("file.path", "file.version") with `delta_compare`
+            "file.size", or "file.path" with ("file.size", "file.etag") without
+            versions: a GCS generation or MD5 changes with the content, not
+            with metadata.
         delta_result_on: Field(s) in the result dataset that match `delta_on` fields.
             Only needed if you rename the identifying fields during processing.
             Default is None.
@@ -152,6 +154,7 @@ def read_storage(
     session_config, client_config = client_configs(
         uris, session, anon, client_config, versions, in_memory
     )
+    delta_on, delta_compare = _delta_keys(uris, client_config, delta_on, delta_compare)
     session = session_for(session, session_config, in_memory)
     return _read_storage(
         uris,
@@ -170,6 +173,18 @@ def read_storage(
         delta_retry=delta_retry,
         delta_unsafe=delta_unsafe,
     )
+
+
+def _delta_keys(uris, client_config, on, compare):
+    """The default delta key on GCS: a generation, or MD5 without versions,
+    changes with the content, not with metadata, which changes the etag.
+    """
+    gcs = all(os.fspath(u).startswith(("gs://", "gcs://")) for u in uris)
+    if gcs and on == DEFAULT_DELTA_ON and compare is None:
+        if client_config.get("version_aware") is False:
+            return "file.path", ("file.size", "file.etag")
+        return ("file.path", "file.version"), "file.size"
+    return on, compare
 
 
 def _read_storage(
@@ -540,6 +555,7 @@ def _arrow_schema() -> "pa.Schema":
         "is_latest": pa.bool_(),
         "last_modified": pa.timestamp("us", tz="UTC"),
         "location": pa.string(),
+        "md5": pa.string(),
     }
     return pa.schema([(name, types[name]) for name in FileRow._fields])
 

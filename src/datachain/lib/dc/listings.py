@@ -5,7 +5,7 @@ from datachain.lib.listing_info import ListingInfo
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
 from datachain.query import Session
-from datachain.query.dataset import DatasetQuery, QueryStep, step_result
+from datachain.query.dataset import DatasetQuery, QueryStep
 
 from .values import read_values
 
@@ -28,29 +28,22 @@ class ReadOnlyQueryStep(QueryStep):
 
     def apply(self) -> "StepResult":
         """Build a read-only ``StepResult`` over the listing columns."""
-        import sqlalchemy as sa
-
-        def q(*columns):
-            return sa.select(*columns)
-
         self._record_access()
         table_name = self.catalog.warehouse.dataset_table_name(
             self.dataset, self.dataset_version
         )
         dataset_row_cls = self.catalog.warehouse.schema.dataset_row_cls
+        stored = self.dataset.get_schema(self.dataset_version)
+        listing_cols = [
+            c
+            for c in dataset_row_cls.listing_columns()
+            if not stored or c.name in stored
+        ]
         table = dataset_row_cls.new_table(
             table_name,
-            columns=(
-                [
-                    *dataset_row_cls.sys_columns(),
-                    *dataset_row_cls.listing_columns(),
-                ]
-            ),
+            columns=[*dataset_row_cls.sys_columns(), *listing_cols],
         )
-
-        return step_result(
-            q, table.columns, dependencies=[(self.dataset, self.dataset_version)]
-        )
+        return self._step_result(table)
 
 
 def listings(

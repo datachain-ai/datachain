@@ -298,7 +298,7 @@ def _build_source_replay_input(
     assert version is not None
     assert latest_version is not None
 
-    from datachain.diff import CompareStatus
+    from datachain.diff import CompareStatus, _compare
     from datachain.lib.dc import C
 
     current_only = source_query.listing_fn is not None
@@ -314,11 +314,19 @@ def _build_source_replay_input(
         names = {name.casefold() for name in source.signals_schema.values}
         while status_col.casefold() in names:
             status_col = "_" + status_col
-        changes = source.diff(
+        md5 = (
+            ("file.md5", "file.md5")
+            if current_only and spec.compare == ("file.size", "file.etag")
+            else None
+        )
+        changes = _compare(
+            source,
             previous,
             on=spec.on,
             compare=spec.compare,
+            same=False,
             status_col=status_col,
+            md5=md5,
         )._persist(preserve_hash=True)
         replay = changes.filter(C(status_col) != CompareStatus.DELETED).select_except(
             status_col

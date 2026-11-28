@@ -247,6 +247,8 @@ class File(DataModel):
             Defaults to Unix epoch (`1970-01-01T00:00:00`).
         location (dict | list[dict], optional): The location of the file.
             Defaults to `None`.
+        md5 (str): Hex-encoded MD5 of the file content, when provided by the
+            storage backend (GCS). Defaults to an empty string.
     """
 
     source: str = Field(default="")
@@ -257,6 +259,10 @@ class File(DataModel):
     is_latest: bool = Field(default=True)
     last_modified: datetime = Field(default=TIME_ZERO)
     location: dict | list[dict] | None = Field(default=None)
+    md5: str = Field(default="")
+
+    # fields added after the first eight, with what older datasets read as
+    _ADDED_COLUMNS: ClassVar[dict[str, Any]] = {"md5": ""}
 
     _datachain_column_types: ClassVar[dict[str, Any]] = {
         "source": String,
@@ -267,6 +273,7 @@ class File(DataModel):
         "is_latest": Boolean,
         "last_modified": DateTime,
         "location": JSON,
+        "md5": String,
     }
     _hidden_fields: ClassVar[list[str]] = [
         "source",
@@ -275,6 +282,7 @@ class File(DataModel):
         "is_latest",
         "last_modified",
         "location",
+        "md5",
     ]
 
     _unique_id_keys: ClassVar[list[str]] = [
@@ -1146,7 +1154,8 @@ class File(DataModel):
         return self._catalog.get_client(self.source).fs
 
     def get_hash(self) -> str:
-        fingerprint = f"{self.source}/{self.path}/{self.version}/{self.etag}"
+        digest = self.md5 or self.etag
+        fingerprint = f"{self.source}/{self.path}/{self.version}/{digest}"
         if self.location:
             fingerprint += f"/{self.location}"
         return sha256(fingerprint.encode()).hexdigest()
@@ -1198,6 +1207,7 @@ class File(DataModel):
             version="",
             is_latest=True,
             last_modified=TIME_ZERO,
+            md5="",
         )
         res._set_stream(self._catalog)
         return res
@@ -1252,6 +1262,7 @@ class FileRow(NamedTuple):
     is_latest: bool = True
     last_modified: datetime = TIME_ZERO
     location: dict | list[dict] | None = None
+    md5: str = ""
 
     # File's path helpers, which read only ``path``: no File is built
     @property

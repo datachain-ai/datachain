@@ -525,6 +525,12 @@ class SignalSchema:
                 ct.bases
                 or ModelStore.get_module(fr) != BUILTIN_MODELS.get(model_name)
                 or fr.model_fields.keys() == ct.fields.keys()
+                or (
+                    issubclass(fr, File)
+                    and fr.model_fields.keys() - File._ADDED_COLUMNS.keys()
+                    <= ct.fields.keys()
+                    <= fr.model_fields.keys()
+                )
             ):
                 return fr
 
