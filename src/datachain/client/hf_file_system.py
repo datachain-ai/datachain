@@ -78,9 +78,10 @@ class _PinnedFile(HfFileSystemFile):
 
 
 class _PinnedStreamFile(HfFileSystemStreamFile):
-    def _open_connection(self):
+    def read(self, length=-1):
+        # huggingface_hub 0.x opens the stream here, without _open_connection()
         with _translate_auth_error():
-            return super()._open_connection()
+            return super().read(length)
 
     def close(self):
         try:
