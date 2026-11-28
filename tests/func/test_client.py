@@ -19,6 +19,7 @@ from datachain.client.fsspec import RangeListedClient
 from datachain.client.ranges import RangeListing
 from datachain.lib.file import File, FileError, FileRow
 from tests.data import ENTRIES
+from tests.utils import listing_pages
 
 _non_null_text = st.text(
     alphabet=st.characters(blacklist_categories=["Cc", "Cs"]), min_size=1
@@ -253,12 +254,7 @@ def test_gcs_listing_ends_at_hi(client, tree, mocker):
 
     mocker.patch.object(client.fs, "_call", counted)
 
-    async def listed():
-        page = await client._list_page("", lo, None, hi)
-        while page.token is not None:
-            page = await client._list_page("", lo, page.token, hi)
-
-    sync(get_loop(), listed)
+    sync(get_loop(), listing_pages, client, "", lo, hi)
     assert read == keys[10:21]  # startOffset includes the start key
 
 
@@ -356,7 +352,7 @@ def test_scandir_lists_keys_past_the_basic_multilingual_plane(
 @pytest.mark.parametrize(
     "tree", [{"dm": {"a": "x", "b": "x"}, "z": "x"}], indirect=True
 )
-def test_prefix_of_only_delete_markers_is_not_found(client, tree):
+def test_prefix_of_only_delete_markers_lists_rows_for_deleted_objects(client, tree):
     client.fs.rm([f"{client.uri}/dm/a", f"{client.uri}/dm/b"])
     listed = client.fs.call_s3("list_object_versions", Bucket=client.name, Prefix="dm/")
     for version in listed["Versions"]:
@@ -367,8 +363,10 @@ def test_prefix_of_only_delete_markers_is_not_found(client, tree):
             VersionId=version["VersionId"],
         )
 
-    with pytest.raises(FileNotFoundError):
-        scandir(client, "dm")
+    assert sorted((e.path, e.is_deleted) for e in scandir(client, "dm")) == [
+        ("dm/a", True),
+        ("dm/b", True),
+    ]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)

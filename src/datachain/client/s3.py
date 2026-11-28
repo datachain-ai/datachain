@@ -1,4 +1,5 @@
 import asyncio
+import heapq
 import logging
 import os
 import re
@@ -196,12 +197,12 @@ _OBJECT = (
     rf"<Size>(\d+)</Size>{_REST}"
 )
 _FOLDER = rf"<CommonPrefixes><Prefix>{_TEXT}</Prefix></CommonPrefixes>"
-# groups: key, version, latest, modified, etag, size | marker: key, modified | folder
-_CONTENTS = rf"<Contents><Key>{_TEXT}</Key>()(){_OBJECT}</Contents>()()|{_FOLDER}"
+# groups: key, version, latest, modified, etag, size | marker: key, ver, date | folder
+_CONTENTS = rf"<Contents><Key>{_TEXT}</Key>()(){_OBJECT}</Contents>()()()|{_FOLDER}"
 _VERSIONS = (
     rf"<Version><Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
     rf"<IsLatest>(true|false)</IsLatest>{_OBJECT}</Version>"
-    rf"|<DeleteMarker><Key>{_TEXT}</Key>{_tag('VersionId')}"
+    rf"|<DeleteMarker><Key>{_TEXT}</Key>{_tag('VersionId', _TEXT)}"
     rf"<IsLatest>(?:true|false)</IsLatest><LastModified>{_TEXT}</LastModified>"
     rf"{_REST}</DeleteMarker>|{_FOLDER}"
 )
@@ -284,28 +285,37 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
         return None
     others, ns, entries = split
     page = _read(others, _fields(shape, ns))
-    # botocore decodes DeleteMarkers and CommonPrefixes; we decode FileRows here
+    # botocore decodes CommonPrefixes; we decode FileRows here
     decode = _decode_url if page.get("EncodingType") == "url" else str
-    rows, markers, folders = [], [], []
+    rows, folders = [], []
     try:
         for entry in entries:
             key, version, latest, modified, etag, size, *marker, folder = entry
             if size:
-                version = ClientS3.clean_s3_version(_unescape(version))
+                is_latest = latest != "false"
+                version = _unescape(version)
+                if is_latest:
+                    version = ClientS3.clean_s3_version(version)
                 when = _parse_timestamp(_unescape(modified))
                 etag = _unescape(etag).strip('"')
                 row = source, decode(_unescape(key)), int(size), version, etag
-                rows.append(as_file_row((*row, latest != "false", when, None, "")))
-            elif folder is None:  # its date checked, as botocore converts it
-                _parse_timestamp(_unescape(marker[1]))
-                markers.append({"Key": _unescape(marker[0])})
+                rows.append(as_file_row((*row, is_latest, when, None, "", False)))
+            elif folder is None:
+                m_key, m_version, m_modified = marker
+                when = _parse_timestamp(_unescape(m_modified))
+                m_key = decode(_unescape(m_key))
+                m_version = _unescape(m_version or "")
+                rows.append(
+                    as_file_row(
+                        (source, m_key, 0, m_version, "", False, when, None, "", True)
+                    )
+                )
             else:
                 folders.append({"Prefix": _unescape(folder)})
     except ValueError:
         return None
     return page | {
         "FileRows": rows,
-        "DeleteMarkers": markers,
         "CommonPrefixes": folders,
     }
 
@@ -637,11 +647,20 @@ class ClientS3(RangeListedClient):
                 self._declined_pages += 1
                 if self._declined_pages == 3:
                     logger.debug("Listing %s: reading pages with ElementTree", self.uri)
-            entries = page.get("Versions" if versions else "Contents", [])
-            rows = [self._file_row(d, versions) for d in entries]
+            entries = [
+                (d, False) for d in page.get("Versions" if versions else "Contents", [])
+            ]
+            markers = [(d, True) for d in page.get("DeleteMarkers", [])]
+            rows = [
+                self._deleted_row(d["Key"], d.get("VersionId", ""), d["LastModified"])
+                if deleted
+                else self._file_row(d, versions)
+                for d, deleted in heapq.merge(
+                    entries, markers, key=lambda e: e[0]["Key"]
+                )
+            ]
         keys = [r[1] for r in rows]
         rows = [r for r in rows if keep(r[1])]
-        markers = [d["Key"] for d in page.get("DeleteMarkers", [])]
         # folders past a delimiter: listed past, though they make no rows
         folders = [p["Prefix"] for p in page.get("CommonPrefixes", [])]
         if not page.get("IsTruncated"):
@@ -653,7 +672,7 @@ class ClientS3(RangeListedClient):
         return Page(
             rows,
             keys[0] if keys else None,
-            max(keys + markers + folders, default=None),
+            max(keys + folders, default=None),
             token,
             keep.past_lo,
             keep.past_hi,
@@ -662,13 +681,16 @@ class ClientS3(RangeListedClient):
         )
 
     def _file_row(self, v, versions: bool) -> tuple:
+        version = v.get("VersionId", "") if versions else ""
+        latest = v.get("IsLatest", True)
+        # a noncurrent "null" version reads only by its id
         return FileRow(
             self.uri,
             v["Key"],
             v["Size"],
-            ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else "",
+            ClientS3.clean_s3_version(version) if latest else version,
             v.get("ETag", "").strip('"'),
-            v.get("IsLatest", True),
+            latest,
             v["LastModified"],
         )
 

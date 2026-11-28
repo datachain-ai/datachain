@@ -506,6 +506,7 @@ def show_df(
             columns=[
                 "dir_type",
                 "etag",
+                "is_deleted",
                 "is_latest",
                 "last_modified",
                 "md5",

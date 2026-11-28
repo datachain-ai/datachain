@@ -147,6 +147,7 @@ def pyarrow_fs(
     format,
     parts: tuple[int, list[tuple[int, bytes]]] | None = None,
 ):
+    file._raise_if_deleted()
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         client.check_unchanged(file)

@@ -249,6 +249,8 @@ class File(DataModel):
             Defaults to `None`.
         md5 (str): Hex-encoded MD5 of the file content, when provided by the
             storage backend (GCS). Defaults to an empty string.
+        is_deleted (bool): True for a row for a deleted object of
+            ``read_storage(versions="all")``. Defaults to `False`.
     """
 
     source: str = Field(default="")
@@ -260,9 +262,10 @@ class File(DataModel):
     last_modified: datetime = Field(default=TIME_ZERO)
     location: dict | list[dict] | None = Field(default=None)
     md5: str = Field(default="")
+    is_deleted: bool = Field(default=False)
 
     # fields added after the first eight, with what older datasets read as
-    _ADDED_COLUMNS: ClassVar[dict[str, Any]] = {"md5": ""}
+    _ADDED_COLUMNS: ClassVar[dict[str, Any]] = {"md5": "", "is_deleted": False}
 
     _datachain_column_types: ClassVar[dict[str, Any]] = {
         "source": String,
@@ -274,6 +277,7 @@ class File(DataModel):
         "last_modified": DateTime,
         "location": JSON,
         "md5": String,
+        "is_deleted": Boolean,
     }
     _hidden_fields: ClassVar[list[str]] = [
         "source",
@@ -283,6 +287,7 @@ class File(DataModel):
         "last_modified",
         "location",
         "md5",
+        "is_deleted",
     ]
 
     _unique_id_keys: ClassVar[list[str]] = [
@@ -561,6 +566,10 @@ class File(DataModel):
         """
         return parent_path(self.path) if "/" in self.path else "."
 
+    def _raise_if_deleted(self) -> None:
+        if self.is_deleted:
+            raise FileError("object was deleted", self.source, self.path)
+
     @contextmanager
     def open(
         self,
@@ -606,6 +615,7 @@ class File(DataModel):
         if not writing and not write_cfg.is_empty():
             raise ValueError("write metadata options are only valid in write modes")
 
+        self._raise_if_deleted()
         if self.location and writing:
             raise VFileError(
                 "Writing to virtual file is not supported",
@@ -659,6 +669,7 @@ class File(DataModel):
         cache: bool = True,
         client: "Client | None" = None,
     ) -> Iterator["BinaryIO"]:
+        self._raise_if_deleted()
         if self._catalog is None:
             raise RuntimeError("Cannot open file: catalog is not set")
         if self.location:
@@ -931,6 +942,7 @@ class File(DataModel):
         """
         if self._catalog is None:
             raise RuntimeError("Cannot export file: catalog is not set")
+        self._raise_if_deleted()
 
         self._caching_enabled = use_cache
 
@@ -1035,6 +1047,8 @@ class File(DataModel):
     async def _prefetch(self, download_cb: "Callback | None" = None) -> bool:
         if self._catalog is None:
             raise RuntimeError("cannot prefetch file because catalog is not setup")
+        if self.is_deleted:
+            return False
 
         file = self
         if self.location:
@@ -1170,6 +1184,7 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot resolve file: catalog is not set")
 
+        self._raise_if_deleted()
         if self.location:
             raise VFileError(
                 "Resolving a virtual file is not supported",
@@ -1263,6 +1278,7 @@ class FileRow(NamedTuple):
     last_modified: datetime = TIME_ZERO
     location: dict | list[dict] | None = None
     md5: str = ""
+    is_deleted: bool = False
 
     # File's path helpers, which read only ``path``: no File is built
     @property

@@ -15,6 +15,7 @@ from datachain.client import Client, listing_worker
 from datachain.client.listing_worker import Pool
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
+from tests.utils import listing_pages
 
 TREE = {
     "a": "1",
@@ -395,3 +396,54 @@ def test_a_stopped_child_does_not_hang_the_listing(
     assert listing(client) == listing(client, processes=False)
     assert stopped
     assert stopped[0].returncode == -9
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_deletes_across_pages_are_exact(
+    client, tree, cloud_prefix, children, remote_rows
+):
+    key, markers_only = f"{cloud_prefix}/031", f"{cloud_prefix}/0315"
+    for i in range(4):
+        client.fs.pipe_file(f"{client.uri}/{key}", str(i).encode())
+        client.fs.rm_file(f"{client.uri}/{key}")
+    client.fs.pipe_file(f"{client.uri}/{markers_only}", b"x")
+    for _ in range(6):  # the newest entries fill pages with delete markers only
+        sync(
+            get_loop(),
+            client.fs._call_s3,
+            "delete_object",
+            Bucket=client.name,
+            Key=markers_only,
+        )
+
+    listed = items(client)
+    deleted = [i for i in listed if i.is_deleted and i.path.startswith(cloud_prefix)]
+
+    assert remote_rows
+    assert rows(listed) == listing(client, processes=False)
+    assert sum(i.path == key for i in listed) == 8  # 4 versions
+    assert sum(i.path == markers_only for i in listed) == 7
+    assert sorted(i.path for i in deleted) == [key] * 4 + [markers_only] * 6
+    assert {(i.size, i.etag, i.is_latest) for i in deleted} == {(0, "", False)}
+    assert len({i.version for i in deleted}) == 10
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_pages_with_deletes_keep_keys_in_order(client, tree, cloud_prefix):
+    a, b = f"{cloud_prefix}/a", f"{cloud_prefix}/b"
+    client.fs.pipe_file(f"{client.uri}/{a}", b"1")
+    client.fs.rm_file(f"{client.uri}/{a}")
+    for i in range(3):
+        client.fs.pipe_file(f"{client.uri}/{b}", str(i).encode())
+
+    pages = sync(get_loop(), listing_pages, client, f"{cloud_prefix}/")
+
+    assert all(page.in_order for page in pages)
+    assert [[(r.path, r.is_deleted) for r in page.rows] for page in pages] == [
+        [(a, False), (a, True), (b, False), (b, False)],
+        [(b, False)],
+    ]
