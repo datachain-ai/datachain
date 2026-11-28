@@ -38,7 +38,7 @@ from datachain.query.batch import (
     RowsOutputBatch,
 )
 from datachain.query.schema import DEFAULT_DELIMITER
-from datachain.utils import TIME_ZERO, safe_closing
+from datachain.utils import TIME_ZERO, internal, safe_closing
 
 logger = logging.getLogger("datachain")
 PREFETCH_FILE_WORKERS = 20
@@ -408,16 +408,33 @@ class UDFBase(AbstractUDF):
         self._func = None
 
     def hash(self, include_body: bool = True) -> str:
-        """
-        Creates SHA hash of this UDF function. It takes into account function,
-        inputs and outputs.
+        """The hash that checkpoints compare to reuse an earlier result: of the
+        function (or the `process` method), its parameters and its output.
 
-        For function-based UDFs, hashes self._func.
-        For class-based UDFs, hashes the process method.
+        Attributes set in `__init__` aren't part of it, so a class whose
+        constructor options change the output should add them, as a hex digest:
 
-        When include_body=False, the function body is excluded (identity-only:
-        __module__ + __qualname__ + defaults). Lambdas always include their
-        bytecode since they share the name '<lambda>'.
+        ```py
+        import hashlib
+
+        import datachain as dc
+
+        class Scale(dc.Mapper):
+            def __init__(self, factor: int):
+                super().__init__()
+                self.factor = factor
+
+            def process(self, x: int) -> int:
+                return x * self.factor
+
+            def hash(self, include_body: bool = True) -> str:
+                key = f"{super().hash(include_body)}:{self.factor}"
+                return hashlib.sha256(key.encode()).hexdigest()
+        ```
+
+        With `include_body=False`, the function body is left out: only its
+        module, name and defaults count. Lambdas always include their bytecode,
+        since they all share the name `<lambda>`.
         """
         # Hash user code: either _func (function-based) or process method (class-based)
         func_to_hash = self._func or self.process
@@ -501,6 +518,7 @@ class UDFBase(AbstractUDF):
         return self.__class__.__name__
 
     @property
+    @internal
     def verbose_name(self):
         """Returns the name of the function or class that implements the UDF."""
         if self._func and callable(self._func):
@@ -556,6 +574,7 @@ class UDFBase(AbstractUDF):
         """Prefetch only when an input can carry a file."""
         return self.prefetch if self._has_file_inputs else 0
 
+    @internal
     def read_columns(self) -> list[str]:
         """The db columns `run()` reads, besides sys__id and the partition id."""
         assert self.params is not None
@@ -934,6 +953,9 @@ def _batch_results(result: Any, expected: int, label: str) -> list[Any]:
 class Mapper(UDFBase):
     """Inherit from this class to pass to `DataChain.map()`.
 
+    `process()` gets one row's values and returns one result, or a tuple for
+    several output columns.
+
     For lists of rows per call, use `BatchMapper` with `DataChain.batch_map()`.
     """
 
@@ -1236,7 +1258,11 @@ def _key_presence_values(
 
 
 class Generator(UDFBase):
-    """Inherit from this class to pass to `DataChain.gen()`."""
+    """Inherit from this class to pass to `DataChain.gen()`.
+
+    `process()` gets one row's values and yields any number of results. Each
+    becomes a new row.
+    """
 
     is_output_batched = True
     udf_kind = "gen"
@@ -1365,7 +1391,11 @@ class Generator(UDFBase):
 
 
 class Aggregator(UDFBase):
-    """Inherit from this class to pass to `DataChain.agg()`."""
+    """Inherit from this class to pass to `DataChain.agg()`.
+
+    `process()` gets, for each parameter, the list of values from all rows in
+    a `partition_by` group, and yields any number of results.
+    """
 
     is_input_batched = True
     is_output_batched = True

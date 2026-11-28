@@ -5,10 +5,11 @@ from weakref import ref
 import pytest
 
 import datachain as dc
-from datachain.catalog import Catalog
+from datachain.catalog import Catalog, get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError, TableMissingError
+from datachain.query import DatasetQuery
 from datachain.query.session import Session
 from tests.utils import skip_if_not_sqlite
 
@@ -163,23 +164,81 @@ def test_get_in_memory_returns_one_shared_session_apart_from_default(tmp_dir):
     assert not default.catalog.in_memory
     assert Session.get(in_memory=True) is session
 
-    view = Session.get(in_memory=True, client_config={"anon": True})
-    assert view.catalog.in_memory
-    assert view.catalog.client_config == {"anon": True}
-    assert Session.get() is default
-
-    with session:
-        pass
-    reopened = Session.get(in_memory=True)
-    assert reopened is not session
-    assert dc.read_values(x=[1], session=reopened).to_values("x") == [1]
-
 
 def test_get_inside_in_memory_session_stays_in_memory():
     with Session("mem", in_memory=True) as active:
         assert Session.get(in_memory=True) is active
-        assert Session.get(client_config={"anon": True}).catalog.in_memory
     assert active not in Session.SESSION_CONTEXTS
+
+
+def test_get_with_config_as_third_positional_argument_raises():
+    with pytest.raises(TypeError):
+        Session.get(None, None, {"anon": True})
+
+
+@pytest.mark.parametrize("in_memory", [False, True], ids=["global", "in-memory"])
+def test_enter_shared_session_raises_and_keeps_its_data(tmp_dir, in_memory):
+    chain = dc.read_values(x=[1, 2], in_memory=in_memory)
+
+    with pytest.raises(RuntimeError, match="Cannot enter"), chain.session:
+        pass
+
+    assert chain.to_values("x") == [1, 2]
+
+
+def test_enter_active_session_again_raises_and_keeps_its_data(test_session):
+    chain = dc.read_values(x=[1, 2], session=test_session)
+
+    with pytest.raises(RuntimeError, match="Cannot enter"), test_session:
+        pass
+
+    assert Session.active() is test_session
+    assert chain.to_values("x") == [1, 2]
+
+
+in_memory_catalog_session = pytest.mark.parametrize(
+    "session_of",
+    [
+        lambda catalog: catalog.session,
+        lambda catalog: DatasetQuery(catalog=catalog).session,
+    ],
+    ids=["catalog-session", "dataset-query"],
+)
+
+
+@in_memory_catalog_session
+def test_save_through_in_memory_catalog_as_first_call_writes_no_database(
+    tmp_dir, session_of
+):
+    with get_catalog(in_memory=True) as scratch:
+        dc.read_values(x=[1], session=session_of(scratch)).save("scratch")
+
+        assert scratch.get_dataset("scratch")
+        assert not (tmp_dir / ".datachain" / "db").exists()
+
+
+@in_memory_catalog_session
+def test_default_session_after_in_memory_catalog_session_stays_persistent(
+    tmp_dir, session_of
+):
+    with get_catalog(in_memory=True) as scratch:
+        dc.read_values(x=[1], session=session_of(scratch)).save("scratch")
+
+        assert scratch.get_dataset("scratch")
+        assert not dc.read_values(x=[2]).session.catalog.in_memory
+
+
+def test_save_in_new_in_memory_catalog_records_a_job_of_that_catalog(tmp_dir):
+    assert not Session.get().catalog.in_memory
+    with get_catalog(in_memory=True) as first:
+        dc.read_values(x=[1], session=first.session).save("scratch")
+
+    with get_catalog(in_memory=True) as second:
+        dc.read_values(x=[2], session=second.session).save("scratch")
+        dataset = second.get_dataset("scratch", versions=None)
+        job_id = dataset.get_version(dataset.latest_version).job_id
+
+        assert second.metastore.get_job(job_id) is not None
 
 
 def test_read_values_in_memory_with_persistent_session_raises(test_session):
@@ -319,7 +378,7 @@ def test_catalog_view_cannot_exit_parent_scope(catalog):
     with Session("owner", catalog=catalog) as parent:
         chain = dc.read_values(value=[1], session=parent).persist()
         view = parent._with_catalog(catalog.copy())
-        with pytest.raises(RuntimeError, match="parent Session"):
+        with pytest.raises(RuntimeError, match="Cannot enter a view"):
             with view:
                 pass
         assert Session.get() is parent
