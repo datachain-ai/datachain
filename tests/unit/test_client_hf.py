@@ -25,6 +25,7 @@ from huggingface_hub.utils import (
 import datachain as dc
 from datachain.asyn import get_loop
 from datachain.cache import Cache
+from datachain.client import hf_file_system as hf_file_system_module
 from datachain.client.hf import HfClient
 from datachain.client.hf_file_system import PinnedHfFileSystem
 from datachain.lib.file import File
@@ -260,6 +261,51 @@ def test_cache_fill_downloads_the_listed_commit(
     with client.open_object(file) as stream:
         assert stream.read() == data[version or "main"]
     assert asked == [version or "b" * 40]
+
+
+def test_cache_fill_checks_and_downloads_one_commit_of_a_moving_branch(
+    catalog, monkeypatch, hf_repositories, hub
+):
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    commits = {"a" * 40: ("old-blob", b"old!"), "b" * 40: ("new-blob", b"new!")}
+    head = ["a" * 40]
+
+    def advance():  # main moves on after the first metadata request
+        commit, head[0] = head[0], "b" * 40
+        return commit
+
+    def serve(request):
+        path = unquote(request.url.path)
+        if "/paths-info/" in path:
+            revision = path.rsplit("/paths-info/", 1)[1]
+            commit = advance() if revision == "main" else revision
+            last = {"id": commit, "title": "", "date": "2024-10-12T00:00:00.000Z"}
+            blob = commits[commit][0]
+            entry = {"type": "file", "path": "a.txt", "size": 4, "oid": blob}
+            return http.Response(200, json=[{**entry, "lastCommit": last}])
+        if "/resolve/" in path:
+            revision = path.split("/resolve/")[1].split("/")[0]
+            return http.Response(200, content=commits[revision][1])
+        return None
+
+    http = hub(serve)
+    monkeypatch.setattr(
+        client.fs.sync_fs._api,
+        "repo_info",
+        lambda *a, **kw: SimpleNamespace(sha=advance()),
+    )
+    file = File(
+        source=client.uri,
+        path="org/repo/a.txt",
+        version="main",
+        etag="old-blob",
+        size=4,
+    )
+
+    client.put_in_cache(file)
+
+    with open(catalog.cache.get_path(file), "rb") as f:
+        assert f.read() == b"old!"
 
 
 @pytest.fixture
@@ -772,6 +818,32 @@ def test_a_stream_read_that_opens_the_response_raises_permission_error(
         client.open_object(file, use_cache=False, block_size=0) as stream,
     ):
         stream.read()
+
+
+@pytest.mark.parametrize("status", [206, 200])
+def test_a_stream_the_sdk_resumes_in_read_never_repeats_bytes(
+    catalog, monkeypatch, hf_repositories, status
+):
+    # huggingface_hub 0.x resumes in read(), without _open_connection()
+    monkeypatch.setattr(hf_file_system_module, "_RESUMES_IN_HOOK", False)
+    body = b"ABCDEFGH"
+
+    def read(self, length=-1):
+        start = 0 if self.response is None or status == 200 else self.loc
+        self.response = SimpleNamespace(status_code=status)  # a new connection
+        out = body[start : start + 4]
+        self.loc += len(out)
+        return out
+
+    monkeypatch.setattr(HfFileSystemStreamFile, "read", read)
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    with fs.open(f"datasets/org/repo@{'a' * 40}/a.txt", "rb", block_size=0) as f:
+        assert f.read(4) == b"ABCD"
+        if status == 206:
+            assert f.read(4) == b"EFGH"
+        else:
+            with pytest.raises(OSError, match="restarted"):
+                f.read(4)
 
 
 def test_hf_filesystem_is_pickleable(catalog):
