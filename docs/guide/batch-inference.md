@@ -59,6 +59,6 @@ A rerun reuses rows already stored in checkpoints, even with a different batch s
 
 ## Prefetch
 
-In `batch_map()`, `settings(prefetch=N)` counts batches: up to N batches download at a time, the files of each batch one after another. Up to 2N+1 batches can be on local disk per process: the batch being processed and 2N ahead. Budget about (2N+1) × `batch` × average file size of disk per process, and start with `prefetch=1` or `2`.
+In `batch_map()`, `settings(prefetch=N)` counts batches: up to N batches download at a time, with up to 20 files per batch downloading concurrently. Up to 2N+1 batches can be on local disk per process: the batch being processed and 2N ahead. Budget about (2N+1) × `batch` × average file size of disk per process, and start with `prefetch=1` or `2`.
 
 `settings(batch_size=N)` sets database insert buffering; it does not change the number of rows per call.

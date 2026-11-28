@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import datachain as dc
+from datachain.lib.file import File
 from datachain.query.dispatch import (
     FINISHED_STATUS,
     STOP_SIGNAL,
@@ -166,3 +168,32 @@ def test_udf_entrypoint_restores_only_injected_safe_path(monkeypatch, mocker, in
         udf_entrypoint()
     assert ("PYTHONSAFEPATH" in os.environ) is not injected
     assert "_DATACHAIN_UDF_SAFE_PATH" not in os.environ
+
+
+def test_run_udf_single_uses_temporary_prefetch_cache(test_session):
+    original = File(source="s3://bucket", path="warm", size=3)
+    new = File(source="s3://bucket", path="new", size=3)
+    test_session.catalog.cache.store_data(original, b"old")
+    seen_caches = []
+
+    def check_cache(file: File) -> int:
+        cache = file._catalog.cache
+        assert cache.contains(original)
+        cache.remove(original)
+        cache.store_data(new, b"new")
+        seen_caches.append(cache)
+        return 1
+
+    res = (
+        dc.read_values(file=[File(path="")], session=test_session)
+        .settings(prefetch=1, cache=False)
+        .map(ok=check_cache, output=int)
+        .to_values("ok")
+    )
+    assert res == [1]
+    assert len(seen_caches) == 1
+    assert seen_caches[0].cache_dir != test_session.catalog.cache.cache_dir
+    assert seen_caches[0]._fallback.cache_dir == test_session.catalog.cache.cache_dir
+    assert test_session.catalog.cache.contains(original)
+    assert not test_session.catalog.cache.contains(new)
+    assert not os.path.exists(seen_caches[0].cache_dir)

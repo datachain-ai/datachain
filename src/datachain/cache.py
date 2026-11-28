@@ -1,6 +1,8 @@
+import asyncio
 import os
-from collections.abc import Iterator
-from contextlib import contextmanager
+import threading
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from tempfile import mkdtemp
 from typing import TYPE_CHECKING
 
@@ -61,6 +63,56 @@ class Cache:  # noqa: PLW1641
         )
         # Read-only fallback consulted on cache misses.
         self._fallback = fallback
+        self._init_download_state()
+
+    def _init_download_state(self) -> None:
+        self._download_locks: dict = {}
+        self._prefetch_refs: dict[str, int] = {}
+        self._prefetch_lock = threading.Lock()
+
+    def __getstate__(self):
+        return {
+            key: value
+            for key, value in vars(self).items()
+            if key not in {"_download_locks", "_prefetch_refs", "_prefetch_lock"}
+        }
+
+    def __setstate__(self, state):
+        vars(self).update(state)
+        self._init_download_state()
+
+    @asynccontextmanager
+    async def _download_lock(self, file: "File", fs=None) -> AsyncIterator[None]:
+        key = (asyncio.get_running_loop(), file.get_hash(), id(fs))
+        lock, users = self._download_locks.get(key, (asyncio.Lock(), 0))
+        self._download_locks[key] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            _, users = self._download_locks[key]
+            if users == 1:
+                del self._download_locks[key]
+            else:
+                self._download_locks[key] = (lock, users - 1)
+
+    def _retain_prefetched(self, file: "File") -> str:
+        oid = file.get_hash()
+        with self._prefetch_lock:
+            self._prefetch_refs[oid] = self._prefetch_refs.get(oid, 0) + 1
+        return oid
+
+    def _release_prefetched(self, oid: str, file: "File | None" = None) -> None:
+        with self._prefetch_lock:
+            users = self._prefetch_refs[oid]
+            if users > 1:
+                self._prefetch_refs[oid] = users - 1
+                return
+            del self._prefetch_refs[oid]
+        if file is not None:
+            self.remove(file)
+        else:
+            self._remove(oid)
 
     def __eq__(self, other) -> bool:
         return self.odb == other.odb
@@ -97,7 +149,9 @@ class Cache:  # noqa: PLW1641
         return self.odb.oid_to_path(checksum)
 
     def remove(self, file: "File") -> None:
-        oid = file.get_hash()
+        self._remove(file.get_hash())
+
+    def _remove(self, oid: str) -> None:
         if self.odb.exists(oid):
             self.odb.delete(oid)
 
@@ -138,7 +192,9 @@ class Cache:  # noqa: PLW1641
         self.odb.protect(self.odb.oid_to_path(oid))
 
     def store_data(self, file: "File", contents: bytes) -> None:
-        self.odb.add_bytes(file.get_hash(), contents)
+        oid = file.get_hash()
+        if not self.odb.exists(oid):
+            self.odb.add_bytes(oid, contents)
 
     def clear(self) -> None:
         """
@@ -172,6 +228,9 @@ class ReadonlyCache(Cache):
         return RuntimeError(f"cannot call {name}() on a read-only cache")
 
     def remove(self, file: "File") -> None:
+        raise self._readonly_error("remove")
+
+    def _remove(self, oid: str) -> None:
         raise self._readonly_error("remove")
 
     async def download(
