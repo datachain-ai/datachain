@@ -125,8 +125,8 @@ def read_lance(
     )
     tables: list[tuple[File, Any, Any]] = []
     for u in uris:
-        routes = storage_sources([u])
-        is_glob = len(routes) > 1 or routes[0][1] is not None
+        routes = storage_sources([u], kwargs.get("recursive", True))
+        is_glob = len(routes) > 1 or bool(routes[0][1])
         if is_glob and version is not None:
             raise DatasetPrepareError(u, f"Cannot specify version for glob '{u}'")
         if is_glob:
