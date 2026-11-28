@@ -145,6 +145,7 @@ class HfClient(Client):
         base = f"{prefix}/" if prefix else ""
         expand = {"expand_info": True} if repository else {}
         # fresh: the SDK caches trees, and a branch or a bucket changes
+        fs.forget_tree(path)
         found = fs.find(path, detail=True, refresh=True, **expand)
         page: list[FileRow] = []
         matched = False

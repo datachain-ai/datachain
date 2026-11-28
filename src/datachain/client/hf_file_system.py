@@ -169,6 +169,13 @@ class PinnedHfFileSystem(HfFileSystem):
         with _translate_auth_error():
             return super().get_file(rpath, *args, **kwargs)
 
+    def forget_tree(self, path: str) -> None:
+        """Drop the cached listings of ``path`` and below: huggingface_hub 0.x
+        and 1.x append a refreshed listing to the cached one."""
+        under = f"{path}/"
+        for cached in [p for p in self.dircache if p == path or p.startswith(under)]:
+            self.dircache.pop(cached, None)
+
     def current_etag(self, path: str, revision: str | None = None) -> str:
         """The path's blob ID, or Xet hash in a bucket, asked of the Hub, not of
         a listing the SDK cached."""

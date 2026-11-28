@@ -258,18 +258,23 @@ def test_each_listing_reads_the_hubs_current_tree(catalog, hf_repositories, hub)
     def serve(request):
         if "/tree/" not in request.url.path:
             return None
-        return http.Response(200, json=[_tree_entry("a.txt", blobs[-1])])
+        return http.Response(200, json=[_tree_entry("a.txt", blobs[-1], blobs[-1])])
 
     http = hub(serve)
+    client = HfClient("datasets", {"token": False}, catalog.cache)
 
     def etags():
-        client = HfClient("datasets", {"token": False}, catalog.cache)
         rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo"))
         return [row.etag for row in rows]
 
     assert etags() == ["old"]
     blobs.append("new")
     assert etags() == ["new"]
+    assert etags() == ["new"]
+    # a lookup after the scans reads the last one, cached once
+    file = client.get_file_info("org/repo/a.txt")
+    assert (file.etag, file.version) == ("new", "new")
+    assert len(client.fs.sync_fs.dircache["datasets/org/repo"]) == 1
 
 
 def test_a_cancelled_listing_frees_its_thread(catalog, monkeypatch, hf_repositories):
