@@ -4,7 +4,7 @@ import os
 import re
 import sys
 import traceback
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from copy import copy
 from typing import TYPE_CHECKING, ClassVar
@@ -85,7 +85,6 @@ class Session:
     _JOB_STATUS: ClassVar[JobStatus | None] = None
     _OWNS_JOB: ClassVar[bool | None] = None
     _JOB_HOOKS_REGISTERED: ClassVar[bool] = False
-    _JOB_FINALIZE_HOOK: ClassVar[Callable[[], None] | None] = None
     # The session that created the process job and finalizes it.
     _JOB_SESSION: ClassVar["Session | None"] = None
     _EXCEPT_HOOK_INSTALLED: ClassVar[bool] = False
@@ -277,12 +276,7 @@ class Session:
 
             # register cleanup hooks only once
             if not Session._JOB_HOOKS_REGISTERED:
-
-                def _finalize_success_hook() -> None:
-                    self._finalize_job_success()
-
-                Session._JOB_FINALIZE_HOOK = _finalize_success_hook
-                atexit.register(Session._JOB_FINALIZE_HOOK)
+                atexit.register(Session._finalize_job_at_exit)
                 Session._install_except_hook()
                 Session._JOB_HOOKS_REGISTERED = True
             Session._JOB_SESSION = self
@@ -301,6 +295,11 @@ class Session:
             catalog.warehouse = self.catalog.warehouse.clone(use_new_connection=True)
             connections.callback(catalog.warehouse.close_on_exit)
             yield catalog
+
+    @classmethod
+    def _finalize_job_at_exit(cls) -> None:
+        if cls._JOB_SESSION is not None:
+            cls._JOB_SESSION._finalize_job_success()
 
     def _finalize_job_success(self):
         """Mark the current job as completed."""
@@ -513,16 +512,11 @@ class Session:
             atexit.unregister(cls._global_cleanup)
 
         # Reset job-related class variables
-        if cls._JOB_FINALIZE_HOOK:
-            try:
-                atexit.unregister(cls._JOB_FINALIZE_HOOK)
-            except ValueError:
-                pass  # Hook was not registered
+        atexit.unregister(cls._finalize_job_at_exit)
         cls._CURRENT_JOB = None
         cls._JOB_STATUS = None
         cls._OWNS_JOB = None
         cls._JOB_HOOKS_REGISTERED = False
-        cls._JOB_FINALIZE_HOOK = None
         cls._JOB_SESSION = None
 
         if cls.ORIGINAL_EXCEPT_HOOK:
