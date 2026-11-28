@@ -37,20 +37,27 @@ def is_script_run() -> bool:
 
 
 class Session:
-    """The catalog that chains use, and the scope of the temporary datasets they
-    create. A session opened with `with` is used by every call inside the block
-    that has no `session=`, and removes its temporary datasets when the block
-    ends. Calls outside any `with` use a default session, cleaned up when the
+    """The context that chains run in. It sets the catalog where they read and
+    save datasets, the client configuration they read storage with, and how long
+    the temporary datasets they create live.
+
+    Temporary datasets are the ones made without a name, such as by `persist()`.
+    A session opened with `with` is used by every call inside the block that has
+    no `session=`, and removes its temporary datasets when the block ends. Calls
+    outside any `with` use a default session, which removes them when the
     process exits.
 
     Parameters:
-        name (str): Letters and numbers only. Optional.
-        catalog (Catalog): The catalog to use. Defaults to the one configured
-            for the environment.
+        name (str): Letters and numbers only, used in the names of the
+            session's temporary datasets. Optional.
+        catalog (Catalog): Where the session's chains read and save datasets.
+            By default, the one the environment configures, created with
+            `client_config` and `in_memory`.
         client_config (dict): Client configuration, such as credentials or an
             endpoint, that the session's chains read storage with.
-        in_memory (bool): Use an in-memory catalog. What the chains save is gone
-            when the session closes.
+        in_memory (bool): Keep datasets in memory instead of the configured
+            storage. A process's in-memory sessions share them, and they are
+            gone once the last of these sessions closes.
 
     Example:
         ```py
