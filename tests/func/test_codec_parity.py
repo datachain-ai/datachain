@@ -329,7 +329,8 @@ def test_model_dict_key_check_edge_cases():
         rc = wh.row_codec([SQLType.as_nullable(DateTime())])
         early = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=1)))
         batch = pa.record_batch({"dt": [early, None]})
-        assert rc.encode_arrow(batch) == [rc.encode((early,)), (None,)]
+        encoded = rc.encode_arrow(batch)
+        assert encoded.column(0).to_pylist() == [rc.encode((early,))[0], None]
 
 
 def test_read_records_rejects_unknown_keys(test_session):

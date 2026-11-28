@@ -10,7 +10,6 @@ import datachain as dc
 from datachain import DataModel
 from datachain.lib.dc import C, DatasetMergeError
 from datachain.lib.signal_schema import SignalResolvingError
-from tests.utils import skip_if_not_sqlite
 
 
 class User(BaseModel):
@@ -64,20 +63,15 @@ def test_merge_objects(test_session):
         assert empl == employees[i]
         i += 1
 
-        assert isinstance(player, TeamMember)
         if empl.person.name != "Bob":
+            assert isinstance(player, TeamMember)
             assert player.player == team[j].player
             assert player.sport == team[j].sport
             assert math.isclose(player.weight, team[j].weight, rel_tol=1e-7)
             assert math.isclose(player.height, team[j].height, rel_tol=1e-7)
             j += 1
         else:
-            # unmatched outer-join row: the Optional fields hydrate as None on
-            # both backends (Optional[float] stays NaN — float is excluded).
-            assert player.player is None
-            assert player.sport is None
-            assert pd.isnull(player.weight)
-            assert pd.isnull(player.height)
+            assert player is None
 
     assert i == len(employees)
     assert j == len(team) - 1
@@ -102,22 +96,18 @@ def test_merge_objects_full_join(test_session, multiple_predicates):
         assert len(items) == 2
 
         empl, player = items
+        if empl is None:
+            assert isinstance(player, TeamMember)
+            assert player.player == "John"
+            continue
+
+        if player is None:
+            assert isinstance(empl, Employee)
+            assert empl.person.name == "Bob"
+            continue
+
         assert isinstance(empl, Employee)
         assert isinstance(player, TeamMember)
-
-        if player.player == "John":
-            # unmatched emp side -> Optional fields are None on both backends.
-            assert empl.person.name is None
-            assert empl.person.age is None
-            continue
-
-        if empl.person.name == "Bob":
-            assert player.player is None
-            assert player.sport is None
-            assert pd.isnull(player.weight)
-            assert pd.isnull(player.height)
-            continue
-
         assert player.player == team[i].player
         assert player.sport == team[i].sport
         assert math.isclose(player.weight, team[i].weight, rel_tol=1e-7)
@@ -150,9 +140,7 @@ def test_merge_similar_objects(test_session):
     assert len(list(ch_inner.to_list())) == 2
 
 
-@skip_if_not_sqlite
 def test_merge_similar_objects_in_memory():
-    # Skip if not on SQLite, as in_memory databases are only supported on SQLite
     new_employees = [
         Employee(id=152, person=User(name="Bob", age=27)),
         Employee(id=201, person=User(name="Karl", age=18)),
@@ -160,8 +148,7 @@ def test_merge_similar_objects_in_memory():
     ]
 
     ch1 = dc.read_values(emp=employees, in_memory=True)
-    # This should use the same session as above (in_memory=True automatically)
-    ch2 = dc.read_values(emp=new_employees)
+    ch2 = dc.read_values(emp=new_employees, in_memory=True)
     assert ch1.session.catalog.in_memory is True
     assert ch1.session.catalog.metastore.db.db_file == ":memory:"
     assert ch1.session.catalog.warehouse.db.db_file == ":memory:"
@@ -668,3 +655,20 @@ def test_filter_after_merge_does_not_bind_size_inside_sqlalchemy_select(test_ses
     allowed = sa.select(sa.literal(3).label("size")).subquery()
     in_allowed = C("right_size").in_(sa.select(C("size")).select_from(allowed))
     assert merged.filter(in_allowed).to_list("path", "right_size") == [("x", 3)]
+
+
+def test_sql_join_hash_includes_model_tags(test_session):
+    left = dc.read_values(id=[1], session=test_session)._query
+    right = dc.read_values(id=[1], session=test_session)._query
+    base = left.join(right, "id").steps[-1].hash()
+    with_left = (
+        left.join(right, "id", left_tags=(("p___type_tag", "Payload"),))
+        .steps[-1]
+        .hash()
+    )
+    with_right = (
+        left.join(right, "id", right_tags=(("p___type_tag", "Payload"),))
+        .steps[-1]
+        .hash()
+    )
+    assert len({base, with_left, with_right}) == 3

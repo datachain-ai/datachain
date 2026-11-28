@@ -26,7 +26,6 @@ import datachain as dc
 from datachain.catalog import Catalog
 from datachain.catalog.loader import get_metastore, get_warehouse
 from datachain.cli.utils import CommaSeparatedArgs
-from datachain.config import Config, ConfigLevel
 from datachain.data_storage import AbstractMetastore, JobQueryType, JobStatus
 from datachain.data_storage.sqlite import (
     SQLiteDatabaseEngine,
@@ -55,7 +54,13 @@ from datachain.utils import (
     DataChainDir,
 )
 
-from .utils import DEFAULT_TREE, instantiate_tree, make_tar, reset_session_job_state
+from .utils import (
+    DEFAULT_TREE,
+    instantiate_tree,
+    make_tar,
+    reset_session_job_state,
+    studio_login,
+)
 
 # gcsfs 2026.3+ turns on HNS/zonal support by default, so every gs op probes the
 # Storage Control API over gRPC. The mock gcs server can't answer that, so the
@@ -157,6 +162,14 @@ def clean_session() -> Generator[None, None, None]:
     Session.cleanup_for_tests()
 
 
+@pytest.fixture
+def clean_job_state(monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    reset_session_job_state()
+    yield
+    reset_session_job_state()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def clean_environment(
     monkeypatch_session: MonkeyPatch,
@@ -180,6 +193,9 @@ def clean_environment(
     monkeypatch_session.chdir(working_dir)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR, raising=False)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR_DATACHAIN_ROOT, raising=False)
+    # A developer's own Studio login must not reach the tests.
+    for var in ("TOKEN", "URL", "TEAM"):
+        monkeypatch_session.delenv(f"DATACHAIN_STUDIO_{var}", raising=False)
 
 
 def _create_job(metastore: AbstractMetastore) -> str:
@@ -1058,8 +1074,7 @@ def dataset_rows():
 
 @pytest.fixture
 def studio_token():
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+    studio_login(default_team="team_name")
 
 
 @pytest.fixture
@@ -1365,18 +1380,17 @@ def remote_project(remote_namespace):
 
 
 @pytest.fixture
-def compressed_parquet_data():
+def parquet_data():
     """
-    Factory fixture that creates lz4-compressed parquet for datasets.
+    Factory fixture that creates parquet for datasets.
     Returns a function that can be called with different data.
     """
     import io
     from datetime import datetime
 
-    import lz4.frame
     import pandas as pd
 
-    def create_compressed_parquet(data, src_uri=None):
+    def create_parquet(data, src_uri=None):
         def _adapt_row(row):
             """
             Adjusting row values to match remote response
@@ -1402,9 +1416,9 @@ def compressed_parquet_data():
         buffer = io.BytesIO()
         df.to_parquet(buffer)
 
-        return lz4.frame.compress(buffer.getvalue())
+        return buffer.getvalue()
 
-    return create_compressed_parquet
+    return create_parquet
 
 
 @pytest.fixture
@@ -1477,14 +1491,14 @@ def numbers_table(warehouse, numbers_ds) -> Generator[sqlalchemy.Table, None, No
 
 
 @pytest.fixture
-def mock_parquet_data(compressed_parquet_data, dog_entries, version="1.0.0"):
-    return compressed_parquet_data(dog_entries(version))
+def mock_parquet_data(parquet_data, dog_entries, version="1.0.0"):
+    return parquet_data(dog_entries(version))
 
 
 @pytest.fixture
-def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_catalog):
+def mock_parquet_data_cloud(parquet_data, dog_entries, cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
-    return compressed_parquet_data(dog_entries("1.0.0"), src_uri)
+    return parquet_data(dog_entries("1.0.0"), src_uri)
 
 
 @pytest.fixture

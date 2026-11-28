@@ -13,6 +13,7 @@ from xml.etree.ElementTree import Element, ParseError, fromstring
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
+from botocore.configprovider import ConstantProvider
 from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.session import Session
@@ -107,6 +108,10 @@ def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
             raise
     headers = meta.get("HTTPHeaders", {})
     return meta["HTTPStatusCode"], headers.get("x-amz-bucket-region")
+
+
+def _denied_or_unsupported(e: ClientError) -> bool:
+    return e.response.get("Error", {}).get("Code") in ("AccessDenied", "NotImplemented")
 
 
 def _parse_timestamp(value: Any) -> datetime:
@@ -396,6 +401,9 @@ class _S3FileSystem(S3FileSystem):
             refresh = refresh or (self._s3 is not None and was_anonymous != self.anon)
         if self.session is None or (refresh and mine):
             self.session = _ListingSession(**self.kwargs)
+        store = self.session.get_component("config_store")
+        for name, val in (("retry_mode", "adaptive"), ("max_attempts", 11)):
+            store.get_config_provider(name).set_default_provider(ConstantProvider(val))
         self._session_is_owned = False  # s3fs keeps the session, even on refresh
         return await super().set_session(refresh, kwargs)
 
@@ -436,7 +444,6 @@ class ClientS3(RangeListedClient):
     # objects written while versioning is off or suspended, and another write in
     # that state replaces them, so those files are checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
-    _unversioned = False  # the server can't list versions
     _declined_pages = 0  # pages in a row the patterns declined before reading one
 
     @staticmethod
@@ -565,6 +572,34 @@ class ClientS3(RangeListedClient):
         endpoint = s3.meta.endpoint_url if s3 else ""
         return not (self.name.endswith("--x-s3") or "r2.cloudflarestorage" in endpoint)
 
+    async def _settle_versions(self, prefix: str) -> None:
+        # a bucket that never had versioning on holds no old versions, and
+        # ListObjectsV2 lists the same rows as ListObjectVersions, for less
+        if not self._is_version_aware():
+            self._unversioned = True
+            return
+        await self.fs.set_session()
+        s3 = await self.fs.get_s3(self.name)
+        try:  # R2 and directory buckets keep no versions
+            unversioned = not self._lists_in_key_order() or (
+                "Status" not in await s3.get_bucket_versioning(Bucket=self.name)
+            )
+        except ClientError as e:
+            if not _denied_or_unsupported(e):  # a failing store tells nothing
+                raise
+            try:  # a version listing tells
+                await s3.list_object_versions(
+                    Bucket=self.name, Prefix=prefix, MaxKeys=1, **self.fs.req_kw
+                )
+                unversioned = False
+            except ClientError as err:
+                if not _denied_or_unsupported(err):
+                    raise
+                # stores without version support hold only current objects; a
+                # caller denied listing versions can list only those
+                unversioned = True
+        self._unversioned = unversioned
+
     async def _list_page(
         self,
         prefix: str,
@@ -574,6 +609,8 @@ class ClientS3(RangeListedClient):
         page_size: int | None = None,
         delimiter: str = "",
     ) -> Page:
+        if self._unversioned is None:  # outside a listing, such as has_keys
+            await self._settle_versions(prefix)
         versions = self._is_version_aware() and not self._unversioned
         kwargs: dict[str, Any] = {"Delimiter": delimiter} if delimiter else {}
         if versions:
@@ -598,15 +635,6 @@ class ClientS3(RangeListedClient):
                 MaxKeys=page_size or self.LIST_PAGE_SIZE,
                 **kwargs,
                 **self.fs.req_kw,  # requester_pays
-            )
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code")
-            if not versions or token is not None or code != "NotImplemented":
-                raise
-            # stores without version support, such as R2, hold only current objects
-            self._unversioned = True
-            return await self._list_page(
-                prefix, start_after, None, hi, page_size, delimiter
             )
         finally:
             _ROWS_OF.reset(rows_of)

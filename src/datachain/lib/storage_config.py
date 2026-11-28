@@ -53,12 +53,13 @@ def client_configs(
     anon: bool | None,
     client_config: dict | None,
     versions: bool,
-) -> tuple[dict | None, dict]:
-    """The client config a session is made with, if not the active one's, and
-    the client config to list ``uris`` with.
+    in_memory: bool = False,
+) -> tuple[dict, dict]:
+    """The client config to read the files of ``uris`` with, and the client
+    config to list them with.
 
     ``client_config`` if given, else the config of ``session`` or the active
-    session. ``anon`` is set
+    session, the shared in-memory session's for ``in_memory``. ``anon`` is set
     on it, True when None and every bucket is public and has no credentials,
     and ``version_aware=False`` without ``versions``. An explicit session is
     never changed.
@@ -67,7 +68,7 @@ def client_configs(
 
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
-    config = _session_client_config(session, client_config)
+    config = _session_client_config(session, client_config, in_memory)
     if anon is None:
         anon = config.get("anon")
     if (
@@ -78,27 +79,34 @@ def client_configs(
         anon = True
     if anon is not None:
         config = config | {"anon": anon}
-    session_config = config if client_config is not None or anon is not None else None
+    session_config = config
     if not versions:
         config = config | {"version_aware": False}
     return session_config, config
 
 
 def session_for(
-    session: Session | None, client_config: dict | None, in_memory: bool
+    session: Session | None, client_config: dict, in_memory: bool
 ) -> Session:
-    """Apply client options without changing the caller or its cleanup scope."""
+    """A view of the session with a catalog of its own for one chain: it reads
+    with `client_config` and records the sources the chain lists. The caller
+    and its cleanup scope are unchanged."""
     session = Session.get(session, in_memory=in_memory)
-    if client_config is None or session.catalog.client_config == client_config:
-        return session
     catalog = session.catalog.copy()
     catalog.client_config = client_config
+    catalog.source_client_configs = {}
     return session._with_catalog(catalog)
 
 
-def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
+def _session_client_config(
+    session: Session | None, client_config: dict | None, in_memory: bool
+) -> dict:
     """``client_config`` if given, else the session's, without creating one."""
     if client_config is not None:
         return client_config
-    session = session or Session.active()
+    if session is None:
+        session = Session.active()
+        if in_memory and session and not session.catalog.in_memory:
+            # The chain runs in the shared in-memory session, which has no config.
+            session = None
     return session.catalog.client_config if session else {}

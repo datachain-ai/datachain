@@ -15,7 +15,8 @@ def create(
 
     Namespaces organize projects, which in turn organize datasets. A default
     namespace always exists and is used if none is specified. Multiple namespaces
-    can be created in Studio, but only the default is available in the CLI.
+    can be created in Studio, but only the default is available in the CLI and
+    in memory.
 
     Parameters:
         name: Name of the new namespace.
@@ -32,6 +33,10 @@ def create(
 
     from datachain.lib.dc.utils import is_studio
 
+    if session.catalog.in_memory:
+        raise NamespaceCreateNotAllowedError(
+            "Creating namespace is not allowed in memory"
+        )
     if not is_studio():
         raise NamespaceCreateNotAllowedError("Creating namespace is not allowed")
 

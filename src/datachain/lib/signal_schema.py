@@ -784,6 +784,10 @@ class SignalSchema:
 
         return read
 
+    def read_columns(self) -> list[str]:
+        """The db columns the signals are read from; setup signals read none."""
+        return [c for reader in self._signal_plan.values() for c in reader.columns]
+
     def plain_columns(self) -> list[str] | None:
         """The db columns of signals that read back as the values they hold: no
         models, unions, conversions or setup values. None when any signal needs
@@ -793,7 +797,7 @@ class SignalSchema:
         readers = self._signal_plan.values()
         if any(r.layout is not None or r.model is not None for r in readers):
             return None
-        return [c for reader in self._signal_plan.values() for c in reader.columns]
+        return self.read_columns()
 
     def plain_output(self) -> bool:
         """True if no signal is a model or a union: a UDF result is then its
@@ -1012,7 +1016,9 @@ class SignalSchema:
             # input expect a single column instead of the union's tag + arm slots.
             schema_inner, schema_opt = unwrap_optional(schema_type)
             if schema_opt:
-                schema_type = schema_inner
+                # A model keeps Optional so an absent one reaches the UDF as None.
+                if not ModelStore.is_pydantic(schema_inner):
+                    schema_type = schema_inner
                 param_inner, param_opt = unwrap_optional(param_type)
                 if param_opt:
                     param_type = param_inner
@@ -1034,18 +1040,18 @@ class SignalSchema:
                 if schema_opt:
                     param_type = unwrap_optional(param_type)[0]
 
-            if param_type == schema_type or (
+            if param_type == schema_inner or (
                 isclass(param_type)
-                and isclass(schema_type)
+                and isclass(schema_inner)
                 and issubclass(param_type, File)
-                and issubclass(schema_type, File)
+                and issubclass(schema_inner, File)
             ):
                 schema[param] = schema_type
                 continue
 
             raise SignalResolvingError(
                 param.split("."),
-                f"types mismatch: {param_type} != {schema_type}",
+                f"types mismatch: {param_type} != {schema_inner}",
             )
 
         return SignalSchema(schema, setup)
@@ -1790,11 +1796,15 @@ class SignalSchema:
         right_nullable: bool = False,
     ) -> "SignalSchema":
         def _nullable(type_: DataType, nullable: bool) -> DataType:
-            # widen scalars/unions; models/collections can't be Nullable on CH
+            # widen scalars/unions/models; collections can't be Nullable on CH
             inner, is_optional = unwrap_optional(type_)
             if not nullable or is_optional:
                 return type_
-            if inner in NULLABLE_SCALARS or union_layout(inner) is not None:
+            if (
+                inner in NULLABLE_SCALARS
+                or ModelStore.is_pydantic(inner)
+                or union_layout(inner) is not None
+            ):
                 return type_ | None  # type: ignore[return-value]
             return type_
 
