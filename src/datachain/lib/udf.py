@@ -33,7 +33,7 @@ from datachain.query.batch import (
     RowsOutputBatch,
 )
 from datachain.query.schema import DEFAULT_DELIMITER
-from datachain.utils import safe_closing
+from datachain.utils import internal, safe_closing
 
 logger = logging.getLogger("datachain")
 
@@ -510,6 +510,7 @@ class UDFBase(AbstractUDF):
         return self.__class__.__name__
 
     @property
+    @internal
     def verbose_name(self):
         """Returns the name of the function or class that implements the UDF."""
         if self._func and callable(self._func):
@@ -554,6 +555,7 @@ class UDFBase(AbstractUDF):
         assert self.params is not None
         return self.prefetch if self.params._file_stream_params else 0
 
+    @internal
     def read_columns(self) -> list[str]:
         """The db columns `run()` reads, besides sys__id and the partition id."""
         assert self.params is not None

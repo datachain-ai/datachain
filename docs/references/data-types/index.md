@@ -13,8 +13,6 @@ expected schema of the model. Alternatively, models may inherit from
 around Pydantic's `BaseModel` that automatically handles registering the model.
 
 ::: datachain.lib.data_model.DataModel
-    options:
-      members: [register]
 
 ::: datachain.lib.data_model.DataType
 

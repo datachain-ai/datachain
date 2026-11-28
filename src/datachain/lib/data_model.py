@@ -22,6 +22,7 @@ from datachain.lib.utils import (
     normalize_col_names,
     type_to_str,
 )
+from datachain.utils import internal
 
 _skip_optional_promotion: ContextVar[bool] = ContextVar(
     "_skip_optional_promotion", default=False
@@ -83,6 +84,7 @@ class DataModel(BaseModel):
     _hidden_fields: ClassVar[list[str]] = []
 
     @classmethod
+    @internal
     def __pydantic_init_subclass__(cls):
         """It automatically registers every declared DataModel child class."""
         promote_default_none(cls)

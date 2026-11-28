@@ -84,17 +84,11 @@ C("file.size") // 1024
 
 
 ::: datachain.lib.dc.DataChain
-    options:
-      filters:
-        - "!^_[^_]"
-        - "!^(to_columnar_data_with_names|results|clone|chunk|delta|delta_unsafe)$"
 
 
 
 ::: datachain.lib.utils.DataChainError
 
 ::: datachain.query.session.Session
-    options:
-      members: false
 
 ::: datachain.lib.dc.Sys

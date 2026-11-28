@@ -45,6 +45,14 @@ STUDIO_URL = "https://studio.datachain.ai"
 T = TypeVar("T")
 
 
+def internal(obj: T) -> T:
+    """Leave `obj` out of the API reference. Does nothing at runtime.
+
+    Put it right above `def`, below `@property` or `@classmethod`.
+    """
+    return obj
+
+
 def parent_path(path: str) -> str:
     return path.rpartition("/")[0]
 

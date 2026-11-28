@@ -10,8 +10,6 @@ operation where a plain function is insufficient, such as when additional `setup
 steps need to happen before or after the processing function runs.
 
 ::: datachain.lib.udf.UDFBase
-    options:
-      members: [hash, process, setup, teardown]
 
 ::: datachain.lib.udf.Aggregator
     options:
