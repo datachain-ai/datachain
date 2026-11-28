@@ -20,6 +20,8 @@ DataChain is a command-line tool for wrangling unstructured AI data at scale. Us
 
 	- View your token with [`datachain auth token`](auth/token.md)
 
+	- List your saved tokens with [`datachain auth list`](auth/list.md)
+
 	- Log out from Studio with [`datachain auth logout`](auth/logout.md)
 
 

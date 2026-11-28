@@ -7,7 +7,6 @@ from datachain.cli import get_logging_level, get_parser
 from datachain.cli.parser.utils import CustomArgumentParser as ArgumentParser
 from datachain.cli.parser.utils import find_columns_type
 from datachain.cli.utils import CommaSeparatedArgs, determine_flavors
-from datachain.error import DataChainError
 
 
 def test_find_columns_type():
@@ -115,27 +114,30 @@ def test_datasets_ls_flavor_defaults():
 
 
 @pytest.mark.parametrize(
-    "studio,local,all,token,expected",
+    "studio,local,all,logged_in,expected",
     [
-        # No flags defaults to local-only (regardless of token presence)
-        (False, False, False, None, (False, True, False)),
-        (False, False, False, "tok", (False, True, False)),
-        # Explicit --all keeps both on with a token, downgrades to local without
-        (False, False, True, "tok", (True, False, False)),
-        (False, False, True, None, (False, True, False)),
-        # Explicit single-source flags clear --all
-        (True, False, False, "tok", (False, False, True)),
-        (False, True, False, None, (False, True, False)),
-        (True, True, False, "tok", (False, True, True)),
+        # (show_local, show_studio). None: the login must not be checked.
+        # No flags: local only.
+        (False, False, False, None, (True, False)),
+        # --all: both with a token for the team, local only without one.
+        (False, False, True, True, (True, True)),
+        (False, False, True, False, (True, False)),
+        # --studio or --local: as given, and --all is cleared.
+        (True, False, False, None, (False, True)),
+        (False, True, False, None, (True, False)),
+        (True, True, False, None, (True, True)),
+        (True, False, True, None, (False, True)),
+        (False, True, True, None, (True, False)),
+        (True, True, True, None, (True, True)),
     ],
 )
-def test_determine_flavors(studio, local, all, token, expected):
-    assert determine_flavors(studio, local, all, token) == expected
+def test_determine_flavors(studio, local, all, logged_in, expected):
+    def check_login():
+        if logged_in is None:
+            raise AssertionError("credentials read")
+        return logged_in
 
-
-def test_determine_flavors_studio_without_token():
-    with pytest.raises(DataChainError, match="Not logged in to Studio"):
-        determine_flavors(studio=True, local=False, all=False, token=None)
+    assert determine_flavors(studio, local, all, check_login) == expected
 
 
 def test_dataset_describe_parser():

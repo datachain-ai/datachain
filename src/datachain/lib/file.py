@@ -615,9 +615,9 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot open file: catalog is not set")
 
-        base_cfg = getattr(self._catalog, "client_config", {}) or {}
+        base_cfg = self._catalog.client_config_for(self.source)
         merged_cfg = {**base_cfg, **(client_config or {})}
-        client: Client = self._catalog.get_client(self.source, **merged_cfg)
+        client: Client = self._catalog.get_client(self.source, client_config=merged_cfg)
 
         if not writing:
             with self._open_read(client=client, block_size=block_size) as f:
@@ -952,7 +952,7 @@ class File(DataModel):
 
         suffix = self._get_destination_suffix(placement)
         output_str = stringify_path(output)
-        client = self._catalog.get_client(output_str, **(client_config or {}))
+        client, _ = self._resolve_destination(output_str, client_config)
 
         # Normalization and traversal safety: for local exports, resolve to absolute
         # and validate the suffix. Cloud exports skip this — the cloud client already

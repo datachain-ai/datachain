@@ -11,6 +11,7 @@ from datachain.lib.namespaces import delete_namespace
 from datachain.lib.namespaces import get as get_namespace
 from datachain.lib.namespaces import ls as ls_namespaces
 from datachain.lib.projects import create as create_project
+from datachain.query import Session
 from tests.utils import skip_if_not_sqlite
 
 
@@ -40,6 +41,14 @@ def test_create_by_user_not_allowed(test_session, is_studio):
         create_namespace("dev", session=test_session)
 
     assert str(excinfo.value) == "Creating namespace is not allowed"
+
+
+def test_create_in_memory_session_in_studio_not_allowed():
+    with Session("mem", in_memory=True) as session:
+        with pytest.raises(
+            NamespaceCreateNotAllowedError, match="not allowed in memory"
+        ):
+            create_namespace("dev", session=session)
 
 
 def test_create_namespace_already_exists(test_session):

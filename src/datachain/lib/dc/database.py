@@ -347,7 +347,8 @@ def read_database(
             schema inferred from the query results.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
-        in_memory: If True, creates an in-memory session. Defaults to False.
+        in_memory: If True, the chain uses the in-memory session, so what it
+            saves is gone when the process exits. Defaults to False.
         infer_schema_length:
             The maximum number of rows to scan for inferring schema.
             If set to `None`, the full data may be scanned.

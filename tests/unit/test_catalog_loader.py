@@ -47,19 +47,6 @@ def test_get_metastore(sqlite_db):
         metastore.close_on_exit()
 
 
-def test_get_metastore_in_memory():
-    if os.environ.get("DATACHAIN_METASTORE"):
-        with pytest.raises(RuntimeError):
-            get_metastore(in_memory=True)
-    else:
-        metastore = get_metastore(in_memory=True)
-        try:
-            assert isinstance(metastore, SQLiteMetastore)
-            assert metastore.db.db_file == ":memory:"
-        finally:
-            metastore.close_on_exit()
-
-
 def test_get_warehouse(sqlite_db):
     warehouse = SQLiteWarehouse(sqlite_db.clone())
     try:
@@ -85,17 +72,19 @@ def test_get_warehouse(sqlite_db):
         warehouse.close_on_exit()
 
 
-def test_get_warehouse_in_memory():
-    if os.environ.get("DATACHAIN_WAREHOUSE"):
-        with pytest.raises(RuntimeError):
-            get_warehouse(in_memory=True)
-    else:
-        warehouse = get_warehouse(in_memory=True)
-        try:
-            assert isinstance(warehouse, SQLiteWarehouse)
-            assert warehouse.db.db_file == ":memory:"
-        finally:
-            warehouse.close_on_exit()
+def test_get_catalog_in_memory_with_env_config_uses_in_memory_sqlite(
+    tmp_path, monkeypatch
+):
+    db_file = str(tmp_path / "studio.db")
+    with SQLiteMetastore(db_file=db_file) as ms, SQLiteWarehouse(db_file=db_file) as wh:
+        for kind, store in (("METASTORE", ms), ("WAREHOUSE", wh)):
+            monkeypatch.setenv(f"DATACHAIN__{kind}", store.serialize())
+            monkeypatch.setenv(f"DATACHAIN_{kind}", "not.an.importable.Store")
+            monkeypatch.setenv(f"DATACHAIN_{kind}_ARG_DB_FILE", str(tmp_path / "x.db"))
+
+        with get_catalog(in_memory=True) as catalog:
+            assert catalog.metastore.db.db_file == ":memory:"
+            assert catalog.warehouse.db.db_file == ":memory:"
 
 
 def test_get_distributed_class(monkeypatch):
