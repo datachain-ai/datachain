@@ -36,6 +36,26 @@ import datachain as dc
 )
 ```
 
+### How many workers a job gets
+
+A Studio job has two worker counts:
+
+- **Start count**: the workers the job starts with, set by `--workers` in `datachain job run` or `workers` in the API. When it is not set, the job takes `num_workers` from the script header, or starts on one worker.
+- **Max workers**: the most workers the job may use, set in the run settings in Studio or by `max_workers` in the API. When it is not set, it equals the start count.
+
+While an operation with `settings(workers=K)` runs, the job adds workers up to K, but never more than its max workers or the free capacity of the cluster. For example, a job that starts with 10 workers and sets no max workers runs a `workers=20` operation on 10 machines; with max workers 30, it gets 20.
+
+`workers` is the number of machines an operation asks for, not an upper limit: when the job already has more workers running, the operation uses all of them. The exception is `workers=1`, which always runs on one machine.
+
+The script header sets the start count like this:
+
+```python
+# /// script
+# [tools.datachain.workers]
+# num_workers = 3
+# ///
+```
+
 ## Data Stays in Storage
 
 DataChain's storage-native architecture means files live in cloud storage and are never copied. The File abstraction operates by reference: only files needed by Python operations are downloaded, and only when their content is actually accessed.
