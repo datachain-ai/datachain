@@ -20,6 +20,7 @@ from datachain import json
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib import parquet_ranges
+from datachain.lib.arrow_filter import to_arrow_filter
 from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
 from datachain.lib.convert.unflatten import ABSENT, unflatten_to_json_pos
 from datachain.lib.data_model import (
@@ -35,7 +36,7 @@ from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaError
 from datachain.lib.udf import Generator
-from datachain.lib.utils import normalize_col_names
+from datachain.lib.utils import normalize_col_names, unique_name
 from datachain.progress import tqdm
 from datachain.utils import safe_closing
 
@@ -96,6 +97,9 @@ _CSV_PARSE_OPTIONS = (
 
 # A partial read prefetches files up to this size and reads larger ones in parts.
 PARTIAL_READ_PREFETCH_MAX_SIZE = 8 * 1024 * 1024
+# Row groups smaller than this on average are scanned in one pass rather than
+# reading filter columns and rest columns separately per group.
+SMALL_ROW_GROUP_BYTES = 16 * 2**20
 
 
 class _PartialReadHandler(FSSpecHandler):
@@ -179,9 +183,157 @@ def read_batches(
                 break
 
 
+def _scan_groups(
+    frag: Any,
+    groups: Sequence[Any],
+    starts: np.ndarray,
+    schema: pa.Schema,
+    columns: list[str],
+    filter: pc.Expression,
+    batch_size: int,
+    index: str,
+    pbar: Any,
+) -> Iterator[tuple[pa.Array, pa.RecordBatch]]:
+    part = frag.subset(row_group_ids=[rg.id for rg in groups])
+    rgs = iter(groups)
+    start = left = 0
+    with safe_closing(
+        part.to_batches(schema=schema, columns=columns, batch_size=batch_size)
+    ) as batches:
+        for batch in batches:
+            while left == 0:
+                rg = next(rgs)
+                start, left = int(starts[rg.id]), rg.num_rows
+            indices = pa.arange(start, start + batch.num_rows)
+            start += batch.num_rows
+            left -= batch.num_rows
+            pbar.update(batch.num_rows)
+            hits = batch.append_column(index, indices).filter(filter)
+            if hits.num_rows:
+                yield hits.column(index), hits.drop_columns([index])
+
+
+def _scan_group_rest(
+    part: Any,
+    hits: pa.Table,
+    start: int,
+    schema: pa.Schema,
+    columns: list[str],
+    keys: list[str],
+    rest: list[str],
+    batch_size: int,
+    index: str,
+) -> Iterator[tuple[pa.Array, pa.RecordBatch]]:
+    key_cols = {c: hits[c].combine_chunks() for c in keys}
+    indices = pc.add(hits[index], start).combine_chunks()
+    pos = hits[index].to_numpy()
+    with safe_closing(
+        part.to_batches(schema=schema, columns=rest, batch_size=batch_size)
+    ) as batches:
+        offset = lo = 0
+        while lo < len(pos):
+            data = next(batches)
+            end = offset + data.num_rows
+            hi = int(np.searchsorted(pos, end))
+            if hi > lo:
+                n = hi - lo
+                data = data.take(pa.array(pos[lo:hi] - offset))
+                read = {
+                    **{c: col.slice(lo, n) for c, col in key_cols.items()},
+                    **dict(zip(rest, data.columns, strict=True)),
+                }
+                yield (
+                    indices.slice(lo, n),
+                    pa.RecordBatch.from_arrays(
+                        [read[c] for c in columns], names=columns
+                    ),
+                )
+                lo = hi
+            offset = end
+
+
+def filter_batches(
+    ds: Dataset,
+    filter: pc.Expression,
+    filter_columns: Sequence[str],
+    **kw: Any,
+) -> Iterator[tuple[pa.Array, pa.RecordBatch]]:
+    """Yield the rows the filter keeps. Small row groups are scanned in one
+    pass; large ones read filter columns first, then scan four groups at a time
+    after two match until a window has no match."""
+    (frag,) = ds.get_fragments()
+    schema, columns = ds.schema, kw.get("columns") or ds.schema.names
+    keys = [c for c in filter_columns if c in schema.names]
+    rest = [c for c in columns if c not in keys]
+    batch_size = kw["batch_size"]
+    starts = np.cumsum([0, *(rg.num_rows for rg in frag.row_groups)])
+    groups = frag.subset(filter, schema=schema).row_groups
+    if not groups:
+        return
+    small = sum(rg.total_byte_size for rg in groups) < SMALL_ROW_GROUP_BYTES * len(
+        groups
+    )
+    index = unique_name("index", schema.names)
+    with tqdm(desc="Parsed by pyarrow", unit="rows", leave=False) as pbar:
+        if not rest or small:
+            yield from _scan_groups(
+                frag, groups, starts, schema, columns, filter, batch_size, index, pbar
+            )
+            return
+        i = matched = 0
+        while i < len(groups):
+            if matched == 2:
+                window = groups[i : i + 4]
+                i += len(window)
+                matched = 0
+                for indices, batch in _scan_groups(
+                    frag,
+                    window,
+                    starts,
+                    schema,
+                    columns,
+                    filter,
+                    batch_size,
+                    index,
+                    pbar,
+                ):
+                    if batch.num_rows:
+                        matched = 2
+                    yield indices, batch
+                continue
+            rg = groups[i]
+            i += 1
+            part = frag.subset(row_group_ids=[rg.id])
+            hits = (
+                part.to_table(schema=schema, columns=keys)
+                .append_column(index, pa.arange(0, rg.num_rows))
+                .filter(filter)
+            )
+            pbar.update(rg.num_rows)
+            if not hits.num_rows:
+                continue
+            matched += 1
+            yield from _scan_group_rest(
+                part,
+                hits,
+                int(starts[rg.id]),
+                schema,
+                columns,
+                keys,
+                rest,
+                batch_size,
+                index,
+            )
+
+
 class ArrowGenerator(Generator):
     # Rows per scanned batch: small enough to bound memory over many files.
     DEFAULT_BATCH_SIZE = 2**14
+    # A predicate that every row SQL filters in matches, the columns it reads,
+    # and the hash of the SQL it was translated from.
+    filter: pc.Expression | None = None
+    filter_columns: tuple[str, ...] = ()
+    filter_hash: str = ""
 
     def __init__(
         self,
@@ -259,15 +411,17 @@ class ArrowGenerator(Generator):
             self._parts.clear()
 
     def hash(self, include_body: bool = True) -> str:
-        # The read schema and columns decide what is read, so reads that differ
-        # only in them must not reuse each other's results.
+        # The read schema, columns and pushed filter decide what is read, so reads
+        # that differ only in them must not reuse each other's results.
         schema = self.input_schema.to_string() if self.input_schema else ""
-        read = schema + json.dumps(self.columns)
+        read = schema + json.dumps(self.columns) + self.filter_hash
         return hashlib.sha256((super().hash(include_body) + read).encode()).hexdigest()
 
-    def project(self, names: set[str]) -> "ArrowGenerator | None":
-        """Return a copy reading only the top-level signals used by ``names``,
-        or None when nothing would be dropped."""
+    def project(
+        self, names: set[str] | None, filters: Sequence[Any] = ()
+    ) -> "ArrowGenerator | None":
+        """Return a copy reading only the top-level signals used by ``names`` (all
+        if None) and the rows ``filters`` may keep, or None if it reads the same."""
         if (
             not self.projectable
             or self.delta_key
@@ -279,7 +433,8 @@ class ArrowGenerator(Generator):
         kept = {
             name: anno
             for name, anno in self.output.values.items()
-            if not names.isdisjoint(SignalSchema({name: anno}).db_signals())
+            if names is None
+            or not names.isdisjoint(SignalSchema({name: anno}).db_signals())
         }
         data = {k: v for k, v in kept.items() if k in self.output_schema.model_fields}
         raw = normalize_col_names(self.input_schema.names)
@@ -294,13 +449,20 @@ class ArrowGenerator(Generator):
                 ),
             )
             kept[pick] = data[pick] = self.output.values[pick]
-        if len(kept) == len(self.output.values):
+        pushed = (
+            to_arrow_filter(filters, self.input_schema, data)
+            if is_parquet(self.kwargs.get("format"))
+            else None
+        )
+        if len(kept) == len(self.output.values) and pushed is None:
             return None
         projected = copy.copy(self)
         projected.columns = [raw[k] for k in data]
         projected.output_schema = dict_to_data_model(self.output_schema.__name__, data)
         projected.source = len(kept) > len(data)
         projected.output = SignalSchema(kept)
+        if pushed is not None:
+            projected.filter, projected.filter_columns, projected.filter_hash = pushed
         if is_parquet(self.kwargs.get("format")):
             projected.prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
         return projected
@@ -308,6 +470,9 @@ class ArrowGenerator(Generator):
     async def _prefetch_file(
         self, file: File, download_cb: "Callback | None" = None
     ) -> bool:
+        # Let filtering choose the row groups before fetching their payload.
+        if self.filter is not None and not file._caching_enabled:
+            return False
         if await super()._prefetch_file(file, download_cb):
             return True
         if not (columns := self._parquet_columns(file)):
@@ -328,6 +493,7 @@ class ArrowGenerator(Generator):
     def _parquet_columns(self, file: File) -> list[str] | None:
         if (
             not self.prefetch_max_size
+            or self.filter is not None
             or not is_parquet(self.kwargs.get("format"))
             or self.datachain_read
             or file._caching_enabled
@@ -425,29 +591,40 @@ class ArrowGenerator(Generator):
             if (names := self._flat_columns(schema)) is not None:
                 kw["columns"] = names
                 yield from self._column_batches(
-                    read_batches(ds, self.nrows, **kw), file, source_kwargs
+                    self._batches(ds, kw), file, source_kwargs
                 )
                 return
             if self.datachain_read:
-                objs = self._signal_objects(ds, kw)
-            else:
-                if self.columns is not None:
-                    present = set(schema.names)
-                    kw["columns"] = [c for c in self.columns if c in present]
-                    # Decode Hugging Face features only for the columns being read.
-                    fields = [schema.field(c) for c in kw["columns"]]
-                    schema = pa.schema(fields, metadata=schema.metadata)
-                hf_schema = _get_hf_schema(schema)
-                objs = (
-                    self._process_non_datachain_record(record, hf_schema)
-                    for _, batch in read_batches(ds, self.nrows, **kw)
-                    # Maps are read as dicts. Duplicate keys raise an error.
-                    for record in batch.to_pylist(maps_as_pydicts="strict")
+                for index, obj in enumerate(self._signal_objects(ds, kw)):
+                    yield self._process_record(obj, file, index, source_kwargs)
+                return
+            if self.columns is not None:
+                present = set(schema.names)
+                kw["columns"] = [c for c in self.columns if c in present]
+                # Decode Hugging Face features only for the columns being read.
+                fields = [schema.field(c) for c in kw["columns"]]
+                schema = pa.schema(fields, metadata=schema.metadata)
+            hf_schema = _get_hf_schema(schema)
+            for start, batch in self._batches(ds, kw):
+                # Maps are read as dicts. Duplicate keys raise an error.
+                records = batch.to_pylist(maps_as_pydicts="strict")
+                indices = (
+                    range(start, start + len(records))
+                    if isinstance(start, int)
+                    else start.to_pylist()
                 )
-            for index, obj in enumerate(objs):
-                yield self._process_record(obj, file, index, source_kwargs)
+                for index, record in zip(indices, records, strict=True):
+                    obj = self._process_non_datachain_record(record, hf_schema)
+                    yield self._process_record(obj, file, index, source_kwargs)
         finally:
             self._release_parts_bytes(reserved)
+
+    def _batches(
+        self, ds: Dataset, kw: dict[str, Any]
+    ) -> Iterator[tuple[int | pa.Array, pa.RecordBatch]]:
+        if self.filter is not None:
+            return filter_batches(ds, self.filter, self.filter_columns, **kw)
+        return read_batches(ds, self.nrows, **kw)
 
     def _source_kwargs(self) -> dict[str, Any]:
         """Return the read options that each row's source keeps."""
@@ -493,7 +670,7 @@ class ArrowGenerator(Generator):
 
     def _column_batches(
         self,
-        batches: Iterator[tuple[int, pa.RecordBatch]],
+        batches: Iterator[tuple[int | pa.Array, pa.RecordBatch]],
         file: File,
         source_kwargs: dict[str, Any] | None,
     ) -> Iterator[pa.RecordBatch]:
@@ -509,9 +686,14 @@ class ArrowGenerator(Generator):
             columns = [_microseconds(c) for c in batch.columns]
             if source_kwargs is not None:
                 n = batch.num_rows
+                indices = (
+                    pa.array(np.arange(start, start + n, dtype=np.int64))
+                    if isinstance(start, int)
+                    else start
+                )
                 columns = [
                     *(pa.repeat(v, n) for v in file_values),
-                    pa.array(np.arange(start, start + n, dtype=np.int64)),
+                    indices,
                     pa.repeat(stored_options, n),
                     *columns,
                 ]

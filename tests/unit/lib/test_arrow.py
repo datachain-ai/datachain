@@ -32,6 +32,7 @@ from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File, FileError
 from datachain.lib.hf import HFClassLabel
 from datachain.lib.parquet_ranges import ParquetBufferedFile, column_ranges
+from datachain.lib.udf import Generator
 from datachain.utils import filtered_cloudpickle_dumps
 from tests.utils import skip_if_not_sqlite
 
@@ -708,6 +709,35 @@ def test_read_parquet_with_parallel_keeps_every_row(tmp_path, test_session_tmpfi
     assert result.order_by("n").to_values("n") == list(range(1600))
     db = test_session_tmpfile.catalog.warehouse.db
     assert db.execute_str("PRAGMA integrity_check").fetchall() == [("ok",)]
+
+
+@pytest.mark.parametrize("prefetch_max_size", [1, 8 * 1024 * 1024])
+@pytest.mark.parametrize("cache", [False, True])
+def test_filtered_parquet_skips_eager_prefetch(
+    tmp_path, test_session, http_server, monkeypatch, mocker, prefetch_max_size, cache
+):
+    pq.write_table(
+        pa.table({"a": [1, 2, 3], "payload": ["x", "y", "z"]}),
+        tmp_path / "filtered.parquet",
+        row_group_size=1,
+    )
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", prefetch_max_size)
+    ordinary = mocker.spy(Generator, "_prefetch_file")
+    ranges = mocker.spy(ArrowGenerator, "_read_parquet_parts")
+
+    rows = (
+        dc.read_parquet(
+            f"{http_server}/filtered.parquet",
+            settings={"prefetch": 1, "cache": cache},
+            session=test_session,
+        )
+        .filter(dc.C("a") == 2)
+        .to_list("source.index", "payload")
+    )
+
+    assert rows == [(1, "y")]
+    assert ordinary.call_count == int(cache)
+    assert ranges.call_count == 0
 
 
 def test_parquet_column_ranges():

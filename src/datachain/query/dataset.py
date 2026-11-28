@@ -1843,6 +1843,7 @@ class RegenerateSystemColumns(Step):
 
 
 _SYS = frozenset({"sys__id", "sys__rand"})
+_SYS_NAMES = _SYS | {"rowid", "_rowid_", "oid"}  # SQLite's names of sys__id
 
 
 @frozen
@@ -2209,7 +2210,13 @@ class SQLJoin(Step):
         tags: tuple[tuple[str, str], ...] = (),
     ) -> sa.Subquery:
         temp_tables_before = len(dq.temp_table_names)
-        query = dq.apply_steps().select()
+        cols = _expr_columns(
+            p
+            for p in ensure_sequence(self.predicates)
+            if isinstance(p, (str, ColumnElement))
+        )
+        uses_sys = _names_sys(cols)
+        query = dq.apply_steps(uses_sys=uses_sys).select()
         if tags:
             tag_type = SQLType.as_nullable(String())
             query = query.add_columns(
@@ -2556,6 +2563,35 @@ def _used_columns(steps: Sequence[Step]) -> set[str] | None:
     return used
 
 
+def _names_sys(cols: set[str] | None) -> bool:
+    # in any case: SQLite resolves column names case-insensitively
+    return cols is None or any(c.lower() in _SYS_NAMES for c in cols)
+
+
+def _uses_sys(step: Step) -> bool:
+    return _names_sys(step.used_columns())
+
+
+def _read_filters(steps: Sequence[Step]) -> list[Any]:
+    """Return the filters that apply to a read's rows as it emits them, unless a
+    step reads sys.id or sys.rand, which differ if the read emits fewer rows."""
+    filters: list[Any] = []
+    for step in steps:
+        if isinstance(step, SQLFilter):
+            filters.extend(step.parse_cols(step.expressions))
+        elif isinstance(step, SQLSelect):
+            if not all(
+                isinstance(a, str) or (isinstance(a, ColumnClause) and not a.is_literal)
+                for a in step.args
+            ):
+                break
+        elif not isinstance(step, SQLOrderBy):
+            break
+    if filters and any(_uses_sys(step) for step in steps):
+        return []
+    return filters
+
+
 def _has_udf_checkpoint(step: RowGenerator, hasher: Any) -> bool:
     h = hasher.copy()
     h.update(step.hash().encode("utf-8"))
@@ -2569,12 +2605,18 @@ def _project_step(
     later_steps: Sequence[Step],
     hasher: Any,
     checkpoints_enabled: bool,
+    uses_sys: bool = False,
 ) -> Step:
     if (
         isinstance(step, RowGenerator)
         and getattr(step.udf.inner, "projectable", False)
-        and (used := _used_columns(later_steps)) is not None
-        and (projected := step.udf.inner.project(used)) is not None
+        and (
+            projected := step.udf.inner.project(
+                _used_columns(later_steps),
+                () if uses_sys else _read_filters(later_steps),
+            )
+        )
+        is not None
     ):
         assert projected.output is not None
         udf = attrs.evolve(
@@ -2787,7 +2829,7 @@ class DatasetQuery:
             for sub_query in step.sub_queries:
                 sub_query.resolve_all_listings()
 
-    def apply_steps(self) -> QueryGenerator:
+    def apply_steps(self, uses_sys: bool = False) -> QueryGenerator:
         """
         Apply the steps in the query and return the resulting
         sqlalchemy.SelectBase.
@@ -2836,7 +2878,11 @@ class DatasetQuery:
         for i, step in enumerate(query.steps):
             hash_input = _hash
             step = _project_step(
-                step, query.steps[i + 1 :], hasher, self.checkpoints_enabled
+                step,
+                query.steps[i + 1 :],
+                hasher,
+                self.checkpoints_enabled,
+                uses_sys=uses_sys,
             )
             hasher.update(step.hash().encode("utf-8"))
             _hash = hasher.hexdigest()

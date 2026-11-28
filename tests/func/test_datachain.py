@@ -21,7 +21,8 @@ import datachain as dc
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
 from datachain.fs.utils import path_to_fsspec_uri
-from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
+from datachain.lib import arrow
+from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE, SMALL_ROW_GROUP_BYTES
 from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, FileError, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
@@ -1877,6 +1878,74 @@ def test_read_parquet_columns_fetch_only_those_columns(
     assert sorted(values) == sorted(table["c3"].to_pylist())
     assert 0 < fetched_bytes[0] < file.size // 4
     assert sum(cb.value for cb in download_callbacks) > 0
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_filter_fetches_only_matching_row_groups(
+    cloud_test_catalog_upload, fetched_bytes
+):
+    ctc = cloud_test_catalog_upload
+    rng = np.random.default_rng(0)
+    table = pa.table(
+        {
+            "id": np.arange(100_000),
+            **{f"c{i}": rng.random(100_000) for i in range(10)},
+        }
+    )
+    file = _put_parquet(ctc, "rg.parquet", table, row_group_size=10_000)
+    chain = dc.read_parquet(
+        f"{ctc.src_uri}/rg.parquet",
+        settings={"prefetch": 0},
+        session=ctc.session,
+    )
+    fetched_bytes[:] = [0, 0]
+
+    rows = chain.filter(dc.C("id") >= 90_000).to_list("id", "c0", "c1")
+    assert len(rows) == 10_000
+    assert min(r[0] for r in rows) == 90_000
+    assert 0 < fetched_bytes[0] < file.size // 4
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "start_id,expected,small_bytes,max_requests",
+    [
+        (0, 50_000, SMALL_ROW_GROUP_BYTES, 4),
+        (500, 49_500, SMALL_ROW_GROUP_BYTES, 4),
+        (0, 50_000, 0, 60),
+    ],
+)
+def test_read_parquet_filter_coalesces_reads_across_many_matching_row_groups(
+    cloud_test_catalog_upload,
+    fetched_bytes,
+    monkeypatch,
+    start_id,
+    expected,
+    small_bytes,
+    max_requests,
+):
+    ctc = cloud_test_catalog_upload
+    monkeypatch.setattr(arrow, "SMALL_ROW_GROUP_BYTES", small_bytes)
+    rng = np.random.default_rng(0)
+    table = pa.table(
+        {
+            "id": np.arange(50_000),
+            **{f"c{i}": rng.random(50_000) for i in range(5)},
+        }
+    )
+    _put_parquet(ctc, "many_rg.parquet", table, row_group_size=500)
+    chain = dc.read_parquet(
+        f"{ctc.src_uri}/many_rg.parquet",
+        settings={"prefetch": 0},
+        session=ctc.session,
+    )
+    fetched_bytes[:] = [0, 0]
+
+    rows = chain.filter(dc.C("id") >= start_id).to_list()
+    assert len(rows) == expected
+    assert 0 < fetched_bytes[1] <= max_requests
 
 
 class _Wide(DataModel):
