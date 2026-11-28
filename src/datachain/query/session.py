@@ -269,14 +269,13 @@ class Session:
     def _job_catalog(self) -> Iterator["Catalog"]:
         """This session's catalog on new connections: the session may be closed
         already, or belong to another thread."""
-        catalog = self.catalog.copy()
-        catalog.metastore = self.catalog.metastore.clone(use_new_connection=True)
-        catalog.warehouse = self.catalog.warehouse.clone(use_new_connection=True)
-        try:
+        with ExitStack() as connections:
+            catalog = self.catalog.copy()
+            catalog.metastore = self.catalog.metastore.clone(use_new_connection=True)
+            connections.callback(catalog.metastore.close_on_exit)
+            catalog.warehouse = self.catalog.warehouse.clone(use_new_connection=True)
+            connections.callback(catalog.warehouse.close_on_exit)
             yield catalog
-        finally:
-            catalog.metastore.close_on_exit()
-            catalog.warehouse.close_on_exit()
 
     def _finalize_job_success(self):
         """Mark the current job as completed."""
