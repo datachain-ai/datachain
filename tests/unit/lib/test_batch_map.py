@@ -33,6 +33,7 @@ def test_batch_map_rejects_scalar_column_annotation(test_session, style):
         ("batch_map", {"batch_size": 32, "batch": 2}, "Use batch_map"),
         ("batch_map", {"parallel": 2, "batch": 2}, "Use settings"),
         ("batch_map", {"prefetch": 8, "batch": 2}, "Use settings"),
+        ("map", {"prefetch_bytes": 100}, "Use settings"),
     ],
 )
 def test_map_options_have_actionable_errors(test_session, method, kwargs, hint):

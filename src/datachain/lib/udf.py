@@ -2,8 +2,10 @@ import hashlib
 import inspect
 import logging
 import sys
+import threading
 import time
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import closing, contextmanager, nullcontext
@@ -22,7 +24,9 @@ from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.error import RowEncodeError
 from datachain.hash_utils import hash_callable
+from datachain.lib.data_model import union_arms
 from datachain.lib.file import File, FileError
+from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError, type_to_str
 from datachain.query.batch import (
@@ -33,7 +37,7 @@ from datachain.query.batch import (
     RowsOutputBatch,
 )
 from datachain.query.schema import DEFAULT_DELIMITER
-from datachain.utils import internal, safe_closing
+from datachain.utils import TIME_ZERO, internal, safe_closing
 
 logger = logging.getLogger("datachain")
 
@@ -389,6 +393,8 @@ class UDFBase(AbstractUDF):
     is_output_batched = False
     udf_kind = "map"  # named in output errors: map, gen or agg
     prefetch: int = 0
+    prefetch_bytes: int | None = None
+    _prefetch_min_rows: int = 1
     # Class-level default so subclasses that skip super().__init__() still
     # have this attribute; _MultiSignalMapper sets params/output per entry
     # but doesn't call _init(), so _func would otherwise be missing.
@@ -550,10 +556,24 @@ class UDFBase(AbstractUDF):
         raise NotImplementedError
 
     @property
+    def _has_file_inputs(self) -> bool:
+        return bool(
+            self.params
+            and any(
+                inspect.isclass(arm) and issubclass(arm, File)
+                for name, param_type in self.params.values.items()
+                if name not in self.params.setup_func
+                for arm in union_arms(param_type)[0]
+            )
+        )
+
+    @property
     def _effective_prefetch(self) -> int:
         """Prefetch only when an input can carry a file."""
         assert self.params is not None
-        return self.prefetch if self.params._file_stream_params else 0
+        # a setup value's type is known only at run time
+        setup = any(name in self.params.setup_func for name in self.params.values)
+        return self.prefetch if setup or self._has_file_inputs else 0
 
     @internal
     def read_columns(self) -> list[str]:
@@ -606,34 +626,136 @@ def _row_files(row: Iterable, batch_columns: set[int] | None) -> Iterator[File]:
             yield from (item for item in obj if isinstance(item, File))
 
 
-async def _prefetch_input(
-    row: T,
-    download_cb: Callback | None = None,
-    after_prefetch: "Callable[[], None]" = noop,
-    batch_columns: set[int] | None = None,
-    prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]]" = (
-        File._prefetch
-    ),
-) -> T:
-    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
+def _row_prefetch_targets(
+    row: Iterable,
+    batch_columns: set[int] | None,
+    max_size: int | None = None,
+    custom_prefetch: bool = False,
+) -> tuple[list[File], list[tuple[File, bool]]]:
+    """Files to fetch for ``row``, and the cache targets to budget, each with
+    whether to evict it after the row. An archive stays: a later row may read
+    another of its members, and evicting it would download it again."""
+    to_fetch: list[File] = []
+    targets: list[tuple[File, bool]] = []
+    for obj in _row_files(row, batch_columns):
         if not obj.path:
             continue
+        target = obj._prefetch_target()
+        if not target.path:
+            continue
+        member = target is not obj
+        if not member:  # a snapshot to evict, as the UDF may change its file
+            target = obj.model_copy()
+        if max_size is None or 0 < target.size <= max_size:
+            targets.append((target, not member))
+            # the row's own file, so the UDF reads it as cached
+            to_fetch.append(target if member and not custom_prefetch else obj)
+        elif custom_prefetch:
+            to_fetch.append(obj)
+    return to_fetch, targets
+
+
+def _remove_target(target: File) -> None:
+    catalog = target._catalog
+    assert catalog is not None
+    try:
+        catalog.cache.remove(target)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to remove prefetched item %r: %s", target.name, e)
+
+
+# a cache target, its budgeted bytes, and whether to evict it after its rows
+_Target = tuple[File, int, bool]
+
+
+class _PrefetchBudget:
+    """Listed-byte read-ahead target, allowing the legacy minimum row count."""
+
+    def __init__(self, max_rows: int, max_bytes: int | None, min_rows: int = 1) -> None:
+        self.max_rows, self.max_bytes = max_rows, max_bytes
+        self.min_rows = min(max(1, min_rows), max_rows)
+        self.rows = self.bytes = 0
+        self.targets: Counter[str] = Counter()
+        self.target_sizes: dict[str, int] = {}
+        self.stopped = False
+        self.changed = threading.Condition()
+
+    def _target_size(self, target: File) -> int:
+        if target.size > 0:
+            return target.size
+        if target.size == 0 and target.last_modified != TIME_ZERO:  # listed empty
+            return 0
+        return self.max_bytes or 0
+
+    def targets_for(self, targets: Iterable[tuple[File, bool]]) -> dict[str, _Target]:
+        by_oid: dict[str, _Target] = {}
+        for target, evict in targets:
+            oid = target.get_hash()
+            size = self._target_size(target)
+            prev = by_oid.get(oid)
+            if prev is None or size > prev[1]:
+                by_oid[oid] = (target, size, evict)
+        return by_oid
+
+    def _added_bytes(self, item: Mapping[str, _Target]) -> int:
+        return sum(size for oid, (_, size, _) in item.items() if not self.targets[oid])
+
+    def stop(self) -> None:
+        with self.changed:
+            self.stopped = True
+            self.changed.notify_all()
+
+    def take(self, item: Mapping[str, _Target]) -> None:
+        with self.changed:
+            while not self.stopped and (
+                self.rows >= self.max_rows
+                or (
+                    self.rows >= self.min_rows
+                    and self.max_bytes is not None
+                    and (added := self._added_bytes(item)) > 0
+                    and self.bytes + added > self.max_bytes
+                )
+            ):
+                self.changed.wait()
+            self.rows += 1
+            for oid, (_, size, _) in item.items():
+                if not self.targets[oid]:
+                    self.bytes += size
+                    self.target_sizes[oid] = size
+                self.targets[oid] += 1
+
+    def give_back(self, item: Mapping[str, _Target], remove: bool = False) -> None:
+        with self.changed:
+            self.rows -= 1
+            for oid, (target, _, evict) in item.items():
+                self.targets[oid] -= 1
+                if not self.targets[oid]:
+                    del self.targets[oid]
+                    self.bytes -= self.target_sizes.pop(oid)
+                    if remove and evict:
+                        _remove_target(target)
+            self.changed.notify_all()
+
+
+async def _prefetch_input(
+    files: Iterable[File],
+    download_cb: Callback | None = None,
+    after_prefetch: "Callable[[], None]" = noop,
+    prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]] | None" = (
+        None
+    ),
+) -> None:
+    for obj in files:
         try:
-            if await prefetch_file(obj, download_cb):
+            prefetched = (
+                await prefetch_file(obj, download_cb)
+                if prefetch_file is not None
+                else await obj._prefetch(download_cb)
+            )
+            if prefetched:
                 after_prefetch()
         except FileError as e:
             logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
-    return row
-
-
-def _remove_prefetched(row: T, batch_columns: set[int] | None = None) -> None:
-    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
-        catalog = obj._catalog
-        assert catalog is not None
-        try:
-            catalog.cache.remove(obj)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to remove prefetched item %r: %s", obj.name, e)
 
 
 def _prefetch_inputs(
@@ -643,8 +765,11 @@ def _prefetch_inputs(
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
     batch_columns: set[int] | None = None,
-    prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]]" = (
-        File._prefetch
+    max_size: int | None = None,
+    max_bytes: int | None = None,
+    min_rows: int = 2 * DEFAULT_PREFETCH + 1,
+    prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]] | None" = (
+        None
     ),
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
@@ -661,17 +786,38 @@ def _prefetch_inputs(
         _prefetch_input,
         download_cb=download_cb,
         after_prefetch=after_prefetch,
-        batch_columns=batch_columns,
         prefetch_file=prefetch_file,
     )
-    mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
+    # prefetch=N holds N rows downloading, N downloaded and one in the UDF.
+    budget = _PrefetchBudget(2 * prefetch + 1, max_bytes, min_rows)
+    custom_prefetch = prefetch_file is not None
+
+    async def fetch(
+        item: tuple[T, list[File], dict[str, _Target]],
+    ) -> tuple[T, dict[str, _Target]]:
+        row, files, targets = item
+        await f(files)
+        return row, targets
+
+    def admitted() -> Iterator[tuple[T, list[File], dict[str, _Target]]]:
+        # Waiting here, before the read-ahead takes a row, leaves the rest of
+        # the input to `parallel` peers.
+        with safe_closing(prepared_inputs):
+            for row in prepared_inputs:
+                files, raw_targets = _row_prefetch_targets(
+                    row, batch_columns, max_size, custom_prefetch
+                )
+                targets = budget.targets_for(raw_targets)
+                budget.take(targets)
+                yield row, files, targets
+
+    mapper = AsyncMapper(fetch, admitted(), workers=prefetch, on_shutdown=budget.stop)
     with closing(mapper.iterate()) as row_iter:
-        for row in row_iter:
+        for row, targets in row_iter:
             try:
                 yield row  # type: ignore[misc]
             finally:
-                if remove_prefetched:
-                    _remove_prefetched(row, batch_columns)
+                budget.give_back(targets, remove=remove_prefetched)
 
 
 def _get_cache(
@@ -766,6 +912,8 @@ class Mapper(UDFBase):
             download_cb=download_cb,
             remove_prefetched=bool(prefetch) and not cache,
             batch_columns=batch_columns,
+            max_bytes=self.prefetch_bytes,
+            min_rows=self._prefetch_min_rows,
         )
 
         def _results(progress) -> Iterator[tuple]:
@@ -1038,12 +1186,13 @@ class Generator(UDFBase):
     async def _prefetch_file(
         self, file: File, download_cb: Callback | None = None
     ) -> bool:
-        if (
+        target = file._prefetch_target()
+        if not target.path or (
             self.prefetch_max_size is not None
-            and not 0 < file.size <= self.prefetch_max_size
+            and not 0 < target.size <= self.prefetch_max_size
         ):
             return False
-        return await file._prefetch(download_cb)
+        return await target._prefetch(download_cb)
 
     def run(  # noqa: C901
         self,
@@ -1132,6 +1281,9 @@ class Generator(UDFBase):
             prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(prefetch) and not cache,
+            max_size=self.prefetch_max_size,
+            max_bytes=self.prefetch_bytes,
+            min_rows=self._prefetch_min_rows,
             prefetch_file=self._prefetch_file,
         )
 
