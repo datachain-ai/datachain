@@ -13,7 +13,7 @@ def create(
     Creates a new project under a specified namespace.
 
     Projects help organize datasets. A default project is always available,
-    but users can create additional ones (only in Studio, not via CLI).
+    but users can create additional ones (only in Studio, not via CLI or in memory).
 
 
     Parameters:
@@ -32,6 +32,8 @@ def create(
 
     from datachain.lib.dc.utils import is_studio
 
+    if session.catalog.in_memory:
+        raise ProjectCreateNotAllowedError("Creating project is not allowed in memory")
     if not is_studio():
         raise ProjectCreateNotAllowedError("Creating project is not allowed")
 

@@ -1,37 +1,50 @@
 # auth logout
 
-Remove the Studio authentication token from DataChain configuration.
+Revoke and remove saved Studio authentication tokens.
 
 ## Synopsis
 
 ```usage
-usage: datachain auth logout [-h] [-v] [-q] [--local]
+usage: datachain auth logout [-h] [-v] [-q] [--team TEAM | --all]
+                             [-H HOSTNAME]
 ```
 
 ## Description
 
-This command removes the Studio authentication token from the global DataChain configuration. By default, it removes the token from the global configuration, but you can also remove it from the local project configuration using the `--local` option.
+This command logs out of Studio: it revokes a saved token, so Studio no longer accepts it, and removes it from the credentials file. If Studio no longer accepts the token, for example because it was already revoked, the token is only removed from the file.
+
+Each `datachain auth login` has a matching logout:
+
+* `datachain auth logout` removes the token saved by `datachain auth login`, without `--team`.
+* `datachain auth logout --team TEAM` removes the token saved by `datachain auth login --team TEAM`. If that token is also used for other teams, it is removed for them too.
+* `datachain auth logout --all` removes every token for the Studio.
+
+Your default team is cleared with the last token for the Studio set in your config.
+
+With a self-hosted Studio, logout removes the tokens for the instance in use, and `-H` picks another one.
 
 ## Options
 
-* `--local` - Remove the token from the local project config instead of the global configuration.
+* `--team TEAM` - Remove the token for this team instead of the one saved without `--team`.
+* `--all` - Remove every token for the Studio, saved with or without `--team`.
+* `-H HOSTNAME`, `--hostname HOSTNAME` - The self-hosted Studio instance to log out from. Defaults to the one in use.
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
 * `-q`, `--quiet` - Be quiet.
 
 ## Examples
 
-1. Remove token from global configuration:
+1. Remove your token:
 ```bash
 datachain auth logout
 ```
 
-2. Remove token from local project configuration:
+2. Remove the token for one team:
 ```bash
-datachain auth logout --local
+datachain auth logout --team customer-team
 ```
 
-3. Remove token with verbose output:
+3. Remove all your tokens:
 ```bash
-datachain auth logout -v
+datachain auth logout --all
 ```

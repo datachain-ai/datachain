@@ -52,7 +52,9 @@ def create_local_config(current_dir):
         "local-conf": "exists",
     }
 
-    with open(DataChainDir(os.path.join(current_dir, ".datachain")).config, "w") as f:
+    root = os.path.join(current_dir, ".datachain")
+    os.makedirs(root, exist_ok=True)
+    with open(DataChainDir(root).config, "w") as f:
         dump(conf, f)
 
 
@@ -197,3 +199,21 @@ def test_edit_config_global_level(global_config_dir):
             "global-conf": "exists",
         },
     }
+
+
+def test_reading_creates_no_directories(global_config_dir, current_dir):
+    os.rmdir(global_config_dir)
+
+    assert Config().read() == {}
+    assert Config(ConfigLevel.GLOBAL).read() == {}
+
+    assert not os.path.exists(os.path.join(current_dir, ".datachain"))
+    assert not os.path.exists(global_config_dir)
+
+
+def test_writing_creates_the_directory(current_dir):
+    with Config(ConfigLevel.LOCAL).edit() as config:
+        config["key"] = "value"
+
+    assert os.listdir(os.path.join(current_dir, ".datachain")) == ["config"]
+    assert Config().read() == {"key": "value"}

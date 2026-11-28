@@ -123,3 +123,14 @@ def test_delete_dataset_version_in_name(test_session, no_studio_dataset):
         dc.read_dataset(f"{dataset_name}@2.0.0", session=test_session).version
         == "2.0.0"
     )
+
+
+def test_read_dataset_missing_version_raises_not_found(test_session, no_studio_dataset):
+    dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
+
+    with pytest.raises(DatasetNotFoundError, match="selected"):
+        dc.read_dataset("selected", version="9.0.0", session=test_session)
+
+    dataset = test_session.catalog.get_dataset("selected", versions=["1.0.0"])
+    with pytest.raises(ValueError, match="Cannot pass 'dataset' without 'name'"):
+        dc.query.DatasetQuery(name=None, dataset=dataset, session=test_session)

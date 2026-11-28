@@ -11,6 +11,7 @@ from typing import (
     Optional,
     TypeVar,
     Union,
+    cast,
     get_args,
     get_origin,
 )
@@ -20,7 +21,6 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
-from datachain.dataset import RowDict
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.data_model import is_mapping_annotation
 from datachain.lib.file import File, TextFile
@@ -53,8 +53,14 @@ from datachain.sql.types import (
 )
 
 
-def _row(schema: SignalSchema, values) -> RowDict:
-    return RowDict(zip(schema.to_udf_spec(), values, strict=True))
+def _features(schema: SignalSchema, row, catalog) -> list:
+    objs = schema.row_reader(cast("list[str]", schema.db_signals()))(row)
+    schema.set_file_streams(objs, catalog)
+    return objs
+
+
+def _read(schema: SignalSchema, values) -> list:
+    return schema.row_reader(list(schema.to_udf_spec()))(values)
 
 
 @pytest.fixture
@@ -982,7 +988,7 @@ def test_get_features_nested(test_session, nested_file_schema):
     )
     expected_features = ["str", 0.0, file, nested_file]
     row = ["str", 0.0, *file_vals, *file_vals, "str", *file_vals]
-    actual_features = nested_file_schema.row_to_features(row, test_session.catalog)
+    actual_features = _features(nested_file_schema, row, test_session.catalog)
     assert expected_features == actual_features
     assert actual_features[2]._catalog == test_session.catalog
     assert actual_features[3]._catalog == test_session.catalog
@@ -1033,14 +1039,14 @@ def test_get_features_nested(test_session, nested_file_schema):
     ],
 )
 def test_row_to_features_parent_and_child_overlap(test_session, spec, row, expected):
-    assert SignalSchema(spec).row_to_features(row, test_session.catalog) == expected
+    assert _features(SignalSchema(spec), row, test_session.catalog) == expected
 
 
 def test_row_to_features_list_of_models(test_session):
     schema = SignalSchema({"items": list[MyType1]})
     row = ([{"aa": 1, "bb": "x"}, {"aa": 2, "bb": "y"}],)
 
-    features = schema.row_to_features(row, test_session.catalog)
+    features = _features(schema, row, test_session.catalog)
 
     assert len(features) == 1
     items = features[0]
@@ -1058,7 +1064,7 @@ def test_row_to_features_dict_of_models(test_session):
         },
     )
 
-    features = schema.row_to_features(row, test_session.catalog)
+    features = _features(schema, row, test_session.catalog)
 
     assert len(features) == 1
     lookup = features[0]
@@ -1075,7 +1081,7 @@ def test_row_to_features_sets_stream_in_model_collection(test_session):
     file = File(path="nested.txt")
     schema = SignalSchema({"collection": FileCollection})
 
-    (collection,) = schema.row_to_features(([file.model_dump()],), test_session.catalog)
+    (collection,) = _features(schema, ([file.model_dump()],), test_session.catalog)
 
     assert collection.files[0]._catalog is test_session.catalog
 
@@ -1084,7 +1090,7 @@ def test_row_to_objs_preserves_plain_collection():
     values = [1.0, 2.0]
     schema = SignalSchema({"values": list[float]})
 
-    (converted,) = schema.row_to_objs(_row(schema, (values,)))
+    (converted,) = _read(schema, (values,))
 
     assert converted is values
 
@@ -1117,7 +1123,7 @@ def test_row_to_objs_preserves_plain_collection():
 def test_row_to_objs_dict_key_decoding_policy(key_type, raw, expected):
     schema = SignalSchema({"m": dict[key_type, int]})
 
-    (converted,) = schema.row_to_objs(_row(schema, (raw,)))
+    (converted,) = _read(schema, (raw,))
 
     assert converted == expected
 
@@ -1125,7 +1131,7 @@ def test_row_to_objs_dict_key_decoding_policy(key_type, raw, expected):
 def test_row_to_features_does_not_decode_string_keys(test_session):
     schema = SignalSchema({"m": dict[Optional[str], int]})
 
-    (converted,) = schema.row_to_features(({"null": 1},), test_session.catalog)
+    (converted,) = _features(schema, ({"null": 1},), test_session.catalog)
 
     assert converted == {"null": 1}
 
@@ -1133,7 +1139,7 @@ def test_row_to_features_does_not_decode_string_keys(test_session):
 def test_row_to_objs_restores_variadic_tuple_shape():
     schema = SignalSchema({"t": tuple[int, ...]})
 
-    (converted,) = schema.row_to_objs(_row(schema, ([1, 2],)))
+    (converted,) = _read(schema, ([1, 2],))
 
     assert converted == (1, 2)
 
@@ -1142,7 +1148,7 @@ def test_row_to_objs_converts_fixed_tuple_positionally():
     raw = [1, {"path": "a.txt"}]
     schema = SignalSchema({"t": tuple[int, File]})
 
-    (converted,) = schema.row_to_objs(_row(schema, (raw,)))
+    (converted,) = _read(schema, (raw,))
 
     assert isinstance(converted, tuple)
     assert converted[0] == 1
@@ -1180,8 +1186,8 @@ def test_row_readers_hydrate_collection_members(annotation, make_raw, test_sessi
     schema = SignalSchema({"x": annotation})
 
     # a fresh value per reader, so neither can hydrate in place for the other
-    (from_objs,) = schema.row_to_objs(_row(schema, (make_raw(),)))
-    (from_features,) = schema.row_to_features((make_raw(),), test_session.catalog)
+    (from_objs,) = _read(schema, (make_raw(),))
+    (from_features,) = _features(schema, (make_raw(),), test_session.catalog)
 
     for converted in (from_objs, from_features):
         if is_mapping_annotation(annotation):
@@ -1197,7 +1203,7 @@ def test_row_readers_hydrate_collection_members(annotation, make_raw, test_sessi
 def test_row_to_objs_keeps_sequence_as_a_list():
     schema = SignalSchema({"s": Sequence[MyType1]})
 
-    (converted,) = schema.row_to_objs(_row(schema, ([{"aa": 1, "bb": "b"}],)))
+    (converted,) = _read(schema, ([{"aa": 1, "bb": "b"}],))
 
     assert isinstance(converted, list)
     assert isinstance(converted[0], MyType1)
@@ -1206,7 +1212,7 @@ def test_row_to_objs_keeps_sequence_as_a_list():
 def test_row_to_objs_keeps_raw_key_when_json_decode_fails():
     schema = SignalSchema({"m": dict[int, int]})
 
-    (converted,) = schema.row_to_objs(_row(schema, ({"foo": 1},)))
+    (converted,) = _read(schema, ({"foo": 1},))
 
     assert converted == {"foo": 1}
 
@@ -1214,7 +1220,7 @@ def test_row_to_objs_keeps_raw_key_when_json_decode_fails():
 def test_row_to_objs_decodes_tuple_keys():
     schema = SignalSchema({"m": dict[tuple[str, int], int]})
 
-    (converted,) = schema.row_to_objs(_row(schema, ({'["a",1]': 2},)))
+    (converted,) = _read(schema, ({'["a",1]': 2},))
 
     assert converted == {("a", 1): 2}
 
@@ -1386,11 +1392,9 @@ def test_set_file_streams_reaches_a_file_after_a_plain_model(test_session):
 def test_row_to_features_optional_collection(test_session, union_type):
     schema = SignalSchema({"items": union_type})
 
-    assert schema.row_to_features((None,), test_session.catalog) == [None]
+    assert _features(schema, (None,), test_session.catalog) == [None]
 
-    (items,) = schema.row_to_features(
-        ([{"aa": 5, "bb": "test"}],), test_session.catalog
-    )
+    (items,) = _features(schema, ([{"aa": 5, "bb": "test"}],), test_session.catalog)
 
     assert isinstance(items, list)
     assert [(type(i), i.aa, i.bb) for i in items] == [(MyType1, 5, "test")]
@@ -1545,7 +1549,7 @@ def test_row_to_objs():
     val = MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))
     row = ("myname", 12.5, *flatten(val), None)
 
-    res = schema.row_to_objs(_row(schema, row))
+    res = _read(schema, row)
 
     assert res == ["myname", 12.5, val, None]
 
@@ -1555,7 +1559,7 @@ def test_row_to_objs_all_none_returns_none():
 
     row = (None, None, None)
 
-    res = schema.row_to_objs(_row(schema, row))
+    res = _read(schema, row)
 
     assert res == [None]
 
@@ -1566,7 +1570,7 @@ def test_row_to_objs_some_none_values_raises():
     row = ("name", None, None)
 
     with pytest.raises(ValidationError):
-        schema.row_to_objs(_row(schema, row))
+        _read(schema, row)
 
 
 def test_row_to_objs_all_none_nested_collections():
@@ -1574,7 +1578,7 @@ def test_row_to_objs_all_none_nested_collections():
 
     row = (5, None, None, None, "tag")
 
-    res = schema.row_to_objs(_row(schema, row))
+    res = _read(schema, row)
 
     assert res == [5, None, "tag"]
 
@@ -1585,7 +1589,7 @@ def test_row_to_objs_nested_collections_some_values_missing_raises():
     row = (5, "component", ["bad"], {"key": "value"}, "tag")
 
     with pytest.raises(ValidationError):
-        schema.row_to_objs(_row(schema, row))
+        _read(schema, row)
 
 
 def test_row_to_objs_setup():
@@ -1599,9 +1603,9 @@ def test_row_to_objs_setup():
 
     # run twice to check that setup_values are cached
     assert schema.setup_values is None
-    schema.row_to_objs(_row(schema, row))
+    _read(schema, row)
     assert schema.setup_values is not None
-    res = schema.row_to_objs(_row(schema, row))
+    res = _read(schema, row)
     assert schema.setup_values is not None
 
     assert res == ["myname", 12.5, setup_value, val, {}]
@@ -1652,7 +1656,7 @@ def test_row_to_objs_setup():
 )
 def test_row_to_objs_parent_and_child_overlap(spec, row, expected):
     schema = SignalSchema(spec)
-    assert schema.row_to_objs(_row(schema, row)) == expected
+    assert _read(schema, row) == expected
 
 
 def test_setup_not_callable():
@@ -1663,7 +1667,7 @@ def test_setup_not_callable():
 def test_setup_error():
     schema = SignalSchema({"name": str, "value": int}, {"init": lambda: 1 / 0})
     with pytest.raises(SetupError):
-        schema.row_to_objs(_row(schema, ("myname", 37)))
+        _read(schema, ("myname", 37))
 
 
 @pytest.mark.parametrize(
@@ -1749,6 +1753,12 @@ def test_slice():
             {"name": str | None, "age": Any},
             False,
             [("name", str), ("age", float)],
+        ),
+        (
+            {"feature": MyType1 | None},
+            {"feature": MyType1 | None},
+            False,
+            [("feature", MyType1 | None)],
         ),
         (
             {"name": str, "age": float, "address": str},

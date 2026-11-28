@@ -30,14 +30,19 @@ def test_dataset_select_paginated_dataset_larger_than_batch_size(test_session):
     db_values = chain.to_values("value")
 
     rows = warehouse.dataset_select_paginated(
-        sa.select(table.c.value).order_by(table.c.value), page_size=1000
+        sa.select(table.c.sys__id, table.c.value), page_size=1000
     )
     assert isinstance(rows, GeneratorType)
 
     rows = list(rows)
     assert len(rows) == 10_000
-    (values,) = zip(*rows, strict=False)
+    _, values = zip(*rows, strict=False)
     assert set(values) == set(db_values)
+
+
+def row_inserts(executemany) -> int:
+    """executemany calls that insert rows, not the writer's ledger rows."""
+    return sum("_parts" not in call.args[0] for call in executemany.call_args_list)
 
 
 def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
@@ -56,13 +61,13 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
         dc.read_values(value=list(range(100)), session=test_session).save("values")
         # 1 for read_values gen() output, 1 for save
         # Note: processed_table no longer exists (sys__input_id is in output table now)
-        assert mock_executemany.call_count == 2
+        assert row_inserts(mock_executemany) == 2
         mock_executemany.reset_mock()
 
         # Mapper
 
         dc.read_dataset("values", session=test_session).map(x2=udf_map).save("large")
-        assert mock_executemany.call_count == 1
+        assert row_inserts(mock_executemany) == 1
         mock_executemany.reset_mock()
 
         chain = (
@@ -71,7 +76,7 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
             .map(x2=udf_map)
             .save("large")
         )
-        assert mock_executemany.call_count == 10
+        assert row_inserts(mock_executemany) == 10
         mock_executemany.reset_mock()
         assert set(chain.to_values("x2")) == set(range(100, 200))
 
@@ -79,7 +84,7 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
 
         dc.read_dataset("values", session=test_session).gen(x2=udf_gen).save("large")
         # Only 1 call for gen() output (processed_table no longer exists)
-        assert mock_executemany.call_count == 1
+        assert row_inserts(mock_executemany) == 1
         mock_executemany.reset_mock()
 
         chain = (
@@ -89,7 +94,7 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
             .save("large")
         )
         # Only 20 for outputs (processed_table no longer exists)
-        assert mock_executemany.call_count == 20
+        assert row_inserts(mock_executemany) == 20
         mock_executemany.reset_mock()
         assert set(chain.to_values("x2")) == set(range(200))
 
