@@ -264,6 +264,8 @@ extra:
 
 hooks:
   - docs/api_hooks.py
+exclude_docs: |
+  *.py
 plugins:
   - search
   - section-index
@@ -274,6 +276,8 @@ plugins:
       handlers:
         python:
           options:
+            extensions:
+              - docs/hide_internal.py
             show_submodules: no
             docstring_options:
               ignore_init_summary: true

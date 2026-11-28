@@ -341,8 +341,7 @@ def test_describe_python_api(lineage, test_session, prefix, capsys, explicit_sco
         if explicit_scope
         else {}
     )
-    with test_session:
-        info = describe_saved("source@1.0.0", **scope)
+    info = describe_saved("source@1.0.0", **scope)
     assert isinstance(info, dc.DatasetDescription)
     assert isinstance(info.selected_version, DatasetInfo)
     assert info.name == f"{prefix}.source@1.0.0"

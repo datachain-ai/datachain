@@ -12,9 +12,17 @@ steps need to happen before or after the processing function runs.
 ::: datachain.lib.udf.UDFBase
 
 ::: datachain.lib.udf.Aggregator
+    options:
+      members: false
 
 ::: datachain.lib.udf.Generator
+    options:
+      members: false
 
 ::: datachain.lib.udf.Mapper
+    options:
+      members: false
 
 ::: datachain.lib.udf.BatchMapper
+    options:
+      members: false
