@@ -12,7 +12,7 @@ def test_normalize_s3_kwargs_secret_and_token():
     assert result == {"secret": "s", "token": "t"}
 
 
-@patch("datachain.client.s3.S3FileSystem")
+@patch("datachain.client.s3._S3FileSystem")
 @patch(
     "datachain.client.s3._head_bucket", side_effect=[(403, "eu-west-3"), (200, None)]
 )
@@ -52,7 +52,7 @@ def test_head_bucket_retries_transient_errors(mocker):
 
 
 @patch("datachain.client.s3._head_bucket", side_effect=[(403, None), (200, None)])
-@patch("datachain.client.s3.S3FileSystem")
+@patch("datachain.client.s3._S3FileSystem")
 @pytest.mark.parametrize("config_region", [None, "eu-west-1"])
 def test_s3_bucket_status_takes_region_name(fs_cls, head, config_region):
     config = {} if config_region is None else {"region_name": config_region}

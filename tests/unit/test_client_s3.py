@@ -577,6 +577,52 @@ def test_each_listing_settles_its_versions_before_its_first_page():
     assert s3.list_objects_v2.call_count == s3.list_object_versions.call_count == 1
 
 
+@pytest.mark.parametrize("canonical", [False, True])
+def test_configured_boto3_aliases_reach_s3_credentials(monkeypatch, canonical):
+    from fsspec.config import conf
+
+    aliases = {
+        "aws_access_key_id": "alias-key",
+        "aws_secret_access_key": "alias-secret",
+        "aws_session_token": "alias-token",
+    }
+    monkeypatch.setitem(conf, "s3", aliases)
+    kwargs = {"key": "key", "secret": "secret", "token": "token"} if canonical else {}
+    fs = ClientS3.create_fs(anon=False, skip_instance_cache=True, **kwargs)
+    fs.connect()
+    credentials = fs.s3._request_signer._credentials
+    prefix = "" if canonical else "alias-"
+    assert (credentials.access_key, credentials.secret_key, credentials.token) == (
+        f"{prefix}key",
+        f"{prefix}secret",
+        f"{prefix}token",
+    )
+    assert not aliases.keys() & fs.kwargs.keys()
+
+
+def test_bucket_status_accepts_configured_boto3_aliases(monkeypatch):
+    from fsspec.config import conf
+
+    monkeypatch.setitem(
+        conf,
+        "s3",
+        {"aws_access_key_id": "key", "aws_secret_access_key": "secret"},
+    )
+    probes = []
+
+    def head(fs, name):
+        probes.append(fs.anon)
+        fs.connect()
+        if fs.anon:
+            return 403, None
+        assert fs.s3._request_signer._credentials.access_key == "key"
+        return 200, None
+
+    monkeypatch.setattr("datachain.client.s3._head_bucket", head)
+    assert ClientS3.bucket_status("bucket").access == "authenticated"
+    assert probes == [True, False]
+
+
 WHEN = _parse_timestamp("2026-09-30T23:00:00.000Z")
 FOLDER = b"<CommonPrefixes><Prefix>p/z+1%26/</Prefix></CommonPrefixes>"
 

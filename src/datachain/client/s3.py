@@ -19,6 +19,7 @@ from botocore.model import Shape
 from botocore.session import Session
 from botocore.utils import parse_timestamp
 from fsspec.asyn import sync_wrapper
+from fsspec.config import apply_config
 from fsspec.utils import tokenize
 from s3fs import S3FileSystem
 
@@ -364,7 +365,7 @@ class _S3FileSystem(S3FileSystem):
     def __init__(self, *args, credential_token=None, **kwargs):
         # The token partitions fsspec's instance cache when provider inputs change.
         self._credential_retry_at = 0.0
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, **ClientS3._normalize_s3_kwargs(kwargs))
 
     async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
         mine = isinstance(self.session, _ListingSession)
@@ -424,9 +425,20 @@ class ClientS3(RangeListedClient):
             "aws_key",
             "aws_secret",
             "aws_token",
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
             "username",
             "password",
         }
+    )
+    _KEY_ALIASES = (
+        ("aws_key", "key"),
+        ("aws_secret", "secret"),
+        ("aws_token", "token"),
+        ("aws_access_key_id", "key"),
+        ("aws_secret_access_key", "secret"),
+        ("aws_session_token", "token"),
     )
     # A version id always names the same bytes, except "null". S3 gives that id to
     # objects written while versioning is off or suspended, and another write in
@@ -440,12 +452,11 @@ class ClientS3(RangeListedClient):
             kwargs["client_kwargs"] = {
                 "endpoint_url": kwargs.pop("aws_endpoint_url")
             } | (kwargs.get("client_kwargs") or {})
-        if "aws_key" in kwargs:
-            kwargs.setdefault("key", kwargs.pop("aws_key"))
-        if "aws_secret" in kwargs:
-            kwargs.setdefault("secret", kwargs.pop("aws_secret"))
-        if "aws_token" in kwargs:
-            kwargs.setdefault("token", kwargs.pop("aws_token"))
+        for alias, name in ClientS3._KEY_ALIASES:
+            if alias in kwargs:
+                value = kwargs.pop(alias)
+                if value is not None and kwargs.get(name) is None:
+                    kwargs[name] = value
         if "region_name" in kwargs:
             kwargs["config_kwargs"] = {"region_name": kwargs.pop("region_name")} | (
                 kwargs.get("config_kwargs") or {}
@@ -454,7 +465,7 @@ class ClientS3(RangeListedClient):
 
     @classmethod
     def create_fs(cls, **kwargs) -> S3FileSystem:
-        kwargs = cls._normalize_s3_kwargs(kwargs)
+        kwargs = cls._normalize_s3_kwargs(apply_config(cls.FS_CLASS, kwargs))
 
         # We want to use newer v4 signature version since regions added after
         # 2014 are not going to support v2 which is the older one.
@@ -477,6 +488,7 @@ class ClientS3(RangeListedClient):
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
+        kwargs = apply_config(cls.FS_CLASS, kwargs)
         # HeadBucket returns the region; do not discover it with another probe.
         kwargs["cache_regions"] = False
         kwargs["skip_instance_cache"] = True
@@ -490,22 +502,19 @@ class ClientS3(RangeListedClient):
             {k: v for k, v in kwargs.items() if k not in strip}
         )
         anon_kwargs["anon"] = True
-        status, region = _head_bucket(S3FileSystem(**anon_kwargs), name)
+        status, region = _head_bucket(_S3FileSystem(**anon_kwargs), name)
         if status == 200:
             return BucketStatus(exists=True, access="anonymous")
         if status == 404:
             return not_found
 
-        # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.
-        auth_kwargs = cls._normalize_s3_kwargs(
-            {k: v for k, v in kwargs.items() if k != "anon"}
-        )
+        auth_kwargs = cls._normalize_s3_kwargs(kwargs | {"anon": False})
         if region:
             auth_kwargs["config_kwargs"] = {"region_name": region} | (
                 auth_kwargs.get("config_kwargs") or {}
             )
         try:
-            status, _ = _head_bucket(S3FileSystem(**auth_kwargs), name)
+            status, _ = _head_bucket(_S3FileSystem(**auth_kwargs), name)
         except NoCredentialsError:
             status = 403
         if status == 200:
