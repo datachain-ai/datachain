@@ -12,6 +12,7 @@ from .datasets import (
 )
 from .hf import read_hf
 from .json import read_json
+from .lance import read_lance
 from .lerobot import read_lerobot
 from .listings import listings
 from .mcap import read_mcap
@@ -47,6 +48,7 @@ __all__ = [
     "read_dataset",
     "read_hf",
     "read_json",
+    "read_lance",
     "read_lerobot",
     "read_mcap",
     "read_pandas",

@@ -16,8 +16,9 @@ chain = dc.read_storage("s3://bucket/data/").filter(dc.C("file.size") > 0)
 # To pandas DataFrame
 df = chain.to_pandas()
 
-# To Parquet -- columnar format, efficient for large datasets
+# To Parquet or Lance -- columnar formats, efficient for large datasets
 chain.to_parquet("output/results.parquet")
+chain.to_lance("output/results.lance")
 
 # To CSV / JSON / JSONL
 chain.to_csv("output/results.csv")
@@ -26,6 +27,18 @@ chain.to_json("output/results.json")
 # Back to storage -- writes files to a new location
 chain.to_storage("s3://bucket/output/", signal="file")
 ```
+
+### Lance tables
+
+`to_lance()` writes a versioned Lance table directory by default (`table=True`), storing `DataModel` signals as Arrow `struct` columns so nested fields such as `p.x` work natively in Lance, LanceDB, and DuckDB:
+
+```python
+chain.to_lance("s3://bucket/results.lance", mode="overwrite")
+chain.to_lance("output/shard.lance", table=False)  # single standalone .lance file
+```
+
+- `mode="create"` (default) raises `FileExistsError` if the target table or file already exists; `mode="overwrite"` commits a new table version (or replaces a standalone file).
+- `fs_kwargs` accepts fsspec option names; `storage_options` accepts Lance option names and overrides translated keys.
 
 ## Export Placement Strategies
 

@@ -988,3 +988,26 @@ def test_read_parquet_filter_on_column_missing_in_one_file(tmp_dir, test_session
     assert drift.filter(C("extra").is_(None) & (C("a") == 2)).to_list(
         "source.index", "a", "extra"
     ) == [(2, 2, None)]
+
+
+def test_read_parquet_cached_hive_partitioning(tmp_dir, test_session):
+    part_dir = tmp_dir / "hive" / "year=2024"
+    part_dir.mkdir(parents=True)
+    file_path = part_dir / "x.parquet"
+    pq.write_table(pa.table({"a": [1, 2]}), file_path)
+    for uri in (
+        (tmp_dir / "hive").as_uri(),
+        file_path.as_uri().replace("%3D", "="),
+    ):
+        for _ in range(2):
+            chain = dc.read_parquet(uri, session=test_session, settings={"cache": True})
+            rows = chain.to_list("source", "a", "year")
+            assert [(a, y) for _, a, y in rows] == [(1, 2024), (2, 2024)]
+            assert rows[0][0].read() == {"a": 1, "year": 2024}
+
+
+def test_read_parquet_filter_on_json_column(tmp_dir, test_session):
+    j = pa.array(['{"a":1}', '{"a":2}'], pa.json_())
+    pq.write_table(pa.table({"id": [1, 2], "j": j}), path := tmp_dir / "j.parquet")
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert chain.filter(C("j") == '{"a":2}').to_values("id") == [2]

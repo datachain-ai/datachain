@@ -104,8 +104,11 @@ postgres = [
 zarr = [
   "zarr>=3.0.0"
 ]
+lance = [
+  "pylance>=14.0.0"
+]
 tests = [
-  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
+  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr,lance]",
   "pytest>=8,<9.3",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
@@ -190,6 +193,7 @@ filterwarnings = [
   "ignore::DeprecationWarning:librosa.core.intervals",
   "ignore::FutureWarning:google.api_core._python_version_support",  # warns a year before a Python version reaches its EOL
   "ignore:Skipping device Apple Paravirtual device:UserWarning",  # torch on macOS CI runners, whose virtual GPU has no Metal 2.0
+  "ignore:lance is not fork-safe:UserWarning",  # pylance registers a global os.register_at_fork warning on import
   # Expected warnings from our code
   "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
   # Coverage limitation on Python 3.13

@@ -56,7 +56,7 @@ from datachain.lib.data_model import (
     union_layout,
     unwrap_optional,
 )
-from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
+from datachain.lib.file import EXPORT_FILES_MAX_THREADS, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
@@ -85,7 +85,6 @@ from datachain.lib.utils import (
     DataChainColumnError,
     DataChainParamsError,
     assert_unique_export_columns,
-    unique_name,
 )
 from datachain.progress import tqdm
 from datachain.project import Project
@@ -104,6 +103,7 @@ from datachain.utils import (
     checkpoints_enabled,
     env2bool,
     inside_notebook,
+    safe_closing,
 )
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
@@ -2221,15 +2221,16 @@ class DataChain:
         )
         column_names = [".".join(filter(None, header)) for header in headers]
 
-        results_iter = self._leaf_values(include_sentinels=include_sentinels)
-
         def column_chunks() -> Iterator[list[list[Any]]]:
-            for chunk in batched(results_iter, chunk_size):
-                yield (
-                    [list(col) for col in zip(*chunk, strict=True)]
-                    if column_names
-                    else []
-                )
+            with safe_closing(
+                self._leaf_values(include_sentinels=include_sentinels)
+            ) as results_iter:
+                for chunk in batched(results_iter, chunk_size):
+                    yield (
+                        [list(col) for col in zip(*chunk, strict=True)]
+                        if column_names
+                        else []
+                    )
 
         return column_names, column_chunks()
 
@@ -2948,22 +2949,23 @@ class DataChain:
                 A list of names infers types. Fields map by position, with exactly one
                 field per column read. Use `columns` to select inputs by name.
                 Omit to infer names and types or restore a saved DataChain schema.
-                On Parquet exported by DataChain, each field takes one picked
-                signal, or one top-level signal without `columns`.
+                On Parquet or Lance exported by DataChain, each field takes one
+                picked signal, or one top-level signal without `columns`.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file. It is named
                 "source", or the first free "cN_source" if that name is taken.
             nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
-                or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-                by DataChain, it picks signals as `select()` does, e.g. "p.x". When
-                omitted (along with `output` and `column`), DataChain automatically
-                reads only the columns used by `select()`, `group_by()`, `count()`, or
-                `gen()` (even after `filter()`, `order_by()`, or `mutate()`), and on
-                Parquet applies `filter()` conditions while reading so only the needed
-                rows and columns are loaded (`filter()`, `select()`, and `order_by()`
-                can appear in any order).
+                or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet or
+                Lance exported by DataChain, it picks signals as `select()` does,
+                e.g. "p.x". When omitted (along with `output` and `column`),
+                DataChain automatically reads only the columns used by `select()`,
+                `group_by()`, `count()`, or `gen()` (even after `filter()`,
+                `order_by()`, or `mutate()`), and on Parquet or Lance applies
+                `filter()` conditions while reading so only the needed rows and
+                columns are loaded (`filter()`, `select()`, and `order_by()` can
+                appear in any order).
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
@@ -2983,23 +2985,13 @@ class DataChain:
             )  # x receives c; y receives a
             ```
         """
-        import pyarrow as pa
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
-        from datachain.lib.arrow import (
-            PARTIAL_READ_PREFETCH_MAX_SIZE,
-            ArrowGenerator,
-            file_schemas,
-            fix_pyarrow_format,
-            infer_output,
-            is_parquet,
-            read_columns,
-        )
+        from datachain.lib.arrow import _tabular_generator, fix_pyarrow_format
 
-        parse_options = kwargs.pop("parse_options", None)
         # pyarrow reads Parquet when no format is given.
         format = kwargs["format"] = fix_pyarrow_format(
-            kwargs.get("format") or "parquet", parse_options
+            kwargs.get("format") or "parquet", kwargs.get("parse_options")
         )
 
         if (
@@ -3016,70 +3008,10 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
-        schema, read, written_by_datachain = None, None, None
-        col_names = output if isinstance(output, Sequence) else None
-        infer = bool(col_names) or not output
-        # A model built from types has no validators; one passed as output may.
-        from_types = infer or isinstance(output, dict)
-        try:
-            if infer:
-                schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                # A source a file written by DataChain stores is replaced by
-                # this read's, unless the read goes under its own column.
-                schema, output, read = infer_output(
-                    schemas, col_names, columns, source and not column
-                )
-
-            if isinstance(output, dict):
-                model = dict_to_data_model(model_name or column or "", output)
-            else:
-                model = output  # type: ignore[assignment]
-
-            if not infer:
-                read, schema = read_columns(
-                    self,
-                    columns,
-                    model,
-                    source and not column,
-                    **kwargs,
-                    parse_options=parse_options,
-                )
-                written_by_datachain = schema is not None
-        except (ValueError, pa.ArrowTypeError) as e:
-            raise DatasetPrepareError(self.name, e) from e
-
-        if column:
-            output = {column: model}  # type: ignore[dict-item]
-        else:
-            output = {
-                name: info.annotation  # type: ignore[misc]
-                for name, info in model.model_fields.items()
-            }
-
-        if source:
-            # The data keeps its names, so on a clash the source signal is renamed.
-            name = unique_name("source", output)  # type: ignore[arg-type]
-            output = {name: ArrowRow} | output  # type: ignore[assignment,operator]
-
-        # Prefetch downloads whole files, so a partial read prefetches only small ones.
-        partial = nrows or (columns is not None and is_parquet(format))
-        projectable = infer and not col_names and not column and columns is None
-        return self.gen(  # type: ignore[arg-type]
-            ArrowGenerator(
-                schema,
-                model,
-                source,
-                nrows,
-                columns=read,
-                written_by_datachain=written_by_datachain,
-                output_from_types=from_types,
-                parse_options=parse_options,
-                prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
-                projectable=projectable,
-                **kwargs,
-            ),
-            output=output,
+        gen, out = _tabular_generator(
+            self, output, column, model_name, source, columns, nrows, **kwargs
         )
+        return self.gen(gen, params="file", output=out)  # type: ignore[arg-type]
 
     def to_parquet(
         self,
@@ -3183,6 +3115,54 @@ class DataChain:
 
         if parquet_writer:
             parquet_writer.close()
+
+    def to_lance(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE,
+        fs_kwargs: dict[str, Any] | None = None,
+        mode: Literal["create", "overwrite"] = "create",
+        table: bool = True,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Save chain to a Lance table or standalone `.lance` data file.
+
+        `DataModel` signals are stored as Arrow `struct` columns so field paths
+        such as `p.x` work natively in Lance, LanceDB, and DuckDB.
+
+        Parameters:
+            path: Target path or storage URI (`s3://`, `gs://`, `az://`, or `hf://`
+                with `table=False`).
+            chunk_size: Rows per chunk to bound memory while reading the chain.
+            fs_kwargs: Storage configuration (fsspec key names) forwarded to
+                fsspec or translated for Lance.
+            mode: `"create"` (default, fails with `FileExistsError` if target
+                exists) or `"overwrite"` (commits a new table version or replaces
+                the standalone file).
+            table: If `True` (default), write a versioned Lance table directory;
+                if `False`, write a single standalone `.lance` v2 file via fsspec.
+            storage_options: Lance storage options for tables (Lance key names),
+                merged over translated `fs_kwargs`.
+            kwargs: Forwarded to `write_fragments` or `LanceFileWriter`.
+        """
+        from datachain.lib.arrow import write_lance
+
+        target = File.at(os.fspath(path).rstrip("/\\"), session=self.session)
+        _, column_chunks = self.to_columnar_data_with_names(
+            chunk_size, include_sentinels=True
+        )
+        write_lance(
+            target,
+            self._effective_signals_schema,
+            column_chunks,
+            mode=mode,
+            table=table,
+            fs_kwargs=fs_kwargs,
+            storage_options=storage_options,
+            **kwargs,
+        )
 
     def to_csv(
         self,

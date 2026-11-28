@@ -160,7 +160,7 @@ Mutate does NOT accept lambdas or Python callables; use `map()` for those. See t
 ### Terminal Operations
 
 - **Persist**: `save` (named dataset), `persist` (anonymous cache)
-- **Export**: `to_pandas`, `to_parquet`, `to_csv`, `to_json`, `to_jsonl`, `to_pytorch`, `to_storage`, `to_database`
+- **Export**: `to_pandas`, `to_parquet`, `to_lance`, `to_csv`, `to_json`, `to_jsonl`, `to_pytorch`, `to_storage`, `to_database`
 - **Inspect**: `show`, `collect`, `count`, `sum`, `avg`, `min`, `max`
 
 ## Mutate vs Map

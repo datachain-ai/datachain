@@ -28,7 +28,7 @@ Never use: `from datachain import File, C, func`
 ### Read data
 - `dc.list_storage("s3://bucket/path/")` -- list storage files without a chain or saved dataset ([guide](https://docs.datachain.ai/guide/listing-storage/))
 - `dc.read_storage("s3://bucket/path/", type="image")` -- files from cloud storage
-- `dc.read_csv()`, `dc.read_json()`, `dc.read_parquet()` -- structured formats
+- `dc.read_csv()`, `dc.read_json()`, `dc.read_parquet()`, `dc.read_lance()` -- structured formats
 - `dc.read_lerobot("hf://datasets/lerobot/pusht")` -- LeRobot v3 robotics dataset, one row per episode with camera `VideoFragment`s
 - `dc.read_database(query, connection_string)` -- SQL databases
 - `dc.read_dataset("name", version="1.0.0")` -- an explicit saved version
@@ -48,7 +48,7 @@ Never use: `from datachain import File, C, func`
 ### Save and export
 - `.save("dataset_name")` -- versioned, named dataset (PREFERRED terminal operation)
 - `.persist()` -- anonymous cache for branching
-- `.to_pandas()`, `.to_parquet()`, `.to_csv()`, `.to_json()` -- export formats
+- `.to_pandas()`, `.to_parquet()`, `.to_lance()`, `.to_csv()`, `.to_json()` -- export formats
 - `.to_pytorch(transform=..., tokenizer=...)` -- iterable PyTorch Dataset for a DataLoader
 - `.to_storage("s3://output/")` -- write files to storage
 - `.to_database("table", "connection_string")` -- write to SQL database
