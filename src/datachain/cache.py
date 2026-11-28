@@ -186,7 +186,11 @@ class ReadonlyCache(Cache):
         raise self._readonly_error("remove")
 
     async def download(
-        self, file: "File", client: "Client", callback: Callback | None = None
+        self,
+        file: "File",
+        client: "Client",
+        callback: Callback | None = None,
+        from_path: str | None = None,
     ) -> None:
         raise self._readonly_error("download")
 
